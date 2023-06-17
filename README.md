@@ -1,2 +1,2 @@
-# gps-receiver-rc
-A Rust project for decoding GPS signals, later extending to other GNSS signals.
+# gnss-sdr-rc
+A Rust project for decoding GNSSS signals, including GPS, Galileo, Beidou and GLONASS.
