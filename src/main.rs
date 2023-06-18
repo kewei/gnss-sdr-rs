@@ -38,8 +38,8 @@ fn main() {
         panic!("Did not find supported device.")
     }
 
-    let sampling_rate: u32 = 2.4e6 as u32;
-    let frequency: u32 = 96.204e6 as u32;
+    let sampling_rate: f32 = 2.0e6;
+    let frequency: u32 = 1574.42e6 as u32;
     let mut gain = 0;
     let ppm_error = 0;
     //const default_buf_len: usize = 262144;
@@ -66,7 +66,7 @@ fn main() {
             panic!("Failed to open rtlsdr device at {}", dev_index);
         } else {
             verbose_set_frequency(dev, frequency);
-            verbose_set_sample_rate(dev, sampling_rate);
+            verbose_set_sample_rate(dev, sampling_rate as u32);
         }
 
         if gain == 0 {
@@ -84,7 +84,7 @@ fn main() {
 
     let mut ring_buffer: AllocRingBuffer<u8> =
         AllocRingBuffer::with_capacity(max_buf_len * size_of::<u8>());
-    let acq_len = 2e-3 * sampling_rate as f32;
+    let acq_len = 2e-3 * sampling_rate;
     loop {
         let r: i32;
 
@@ -109,6 +109,7 @@ fn main() {
             }
             ring_buffer.extend(buf_vec.into_iter());
             //let buf_vec_f32: Vec<f32> = buf_vec.to_vec().iter().map(|x| f32::from(*x)).collect();
+            //utilities::plot_psd(&buf_vec_f32, sampling_rate);
         }
         if ring_buffer.is_full() {
             println!("Samples are processed slower than expected! So the data is not consistent anymore.");
