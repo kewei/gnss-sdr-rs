@@ -4,8 +4,11 @@
 #![allow(unused_variables)]
 
 use std::ffi::{c_void, CString};
+use std::io::Error;
 use std::mem::size_of;
 use std::ptr;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::{env, u8};
 mod acquisition;
 use acquisition::do_acquisition;
@@ -20,7 +23,7 @@ use ringbuffer::{AllocRingBuffer, RingBuffer, RingBufferRead, RingBufferWrite};
 
 include!(concat!(env!("OUT_DIR"), "/bindings.rs"));
 
-fn main() {
+fn main() -> Result<(), Error> {
     let mut dev_name = String::from("00000001");
     dev_name.retain(|c| c.to_digit(32).unwrap() <= 9);
     let dev_name = CString::new(dev_name).expect("CString::new failed.");
@@ -38,7 +41,7 @@ fn main() {
         panic!("Did not find supported device.")
     }
 
-    let sampling_rate: f32 = 2.0e6;
+    let sampling_rate: f32 = 2.046e6;
     let frequency: u32 = 1574.42e6 as u32;
     let mut gain = 0;
     let ppm_error = 0;
@@ -85,7 +88,9 @@ fn main() {
     let mut ring_buffer: AllocRingBuffer<u8> =
         AllocRingBuffer::with_capacity(max_buf_len * size_of::<u8>());
     let acq_len = 2e-3 * sampling_rate;
-    loop {
+    let term = Arc::new(AtomicBool::new(false));
+    signal_hook::flag::register(signal_hook::consts::SIGTERM, Arc::clone(&term))?;
+    while !term.load(Ordering::Relaxed) {
         let r: i32;
 
         unsafe {
@@ -109,7 +114,7 @@ fn main() {
             }
             ring_buffer.extend(buf_vec.into_iter());
             //let buf_vec_f32: Vec<f32> = buf_vec.to_vec().iter().map(|x| f32::from(*x)).collect();
-            //utilities::plot_psd(&buf_vec_f32, sampling_rate);
+            //utilities::plot_psd(&buf_vec_f32, sampling_rate as u32);
         }
         if ring_buffer.is_full() {
             println!("Samples are processed slower than expected! So the data is not consistent anymore.");
@@ -147,4 +152,5 @@ fn main() {
         rtlsdr_close(dev);
         libc::free(dev as *mut c_void);
     }
+    Ok(())
 }

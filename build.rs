@@ -4,7 +4,7 @@ use std::env;
 use std::path::PathBuf;
 
 fn main() {
-    println!("cargo:rustc-link-search={}", "src/lib");
+    println!("cargo:rustc-link-search={}", "src/c_lib");
     println!("cargo:rustc-link-lib=convenience");
     println!("cargo:rustc-link-search={}", "/usr/local/lib");
     println!("cargo:rustc-link-lib=rtlsdr");
@@ -18,6 +18,7 @@ fn main() {
         .expect("Unable to generate bindings");
 
     let output_path = PathBuf::from(env::var("OUT_DIR").unwrap());
-    bindings.write_to_file(output_path.join("bindings.rs"))
+    bindings
+        .write_to_file(output_path.join("bindings.rs"))
         .expect("Could not write bindings");
 }
