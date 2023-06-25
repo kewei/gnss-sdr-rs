@@ -87,7 +87,7 @@ fn main() -> Result<(), Error> {
 
     let mut ring_buffer: AllocRingBuffer<u8> =
         AllocRingBuffer::with_capacity(max_buf_len * size_of::<u8>());
-    let acq_len = 2e-3 * sampling_rate;
+    let acq_len = 1e-3 * sampling_rate * 2.0; // Complex values
     let term = Arc::new(AtomicBool::new(false));
     signal_hook::flag::register(signal_hook::consts::SIGTERM, Arc::clone(&term))?;
     while !term.load(Ordering::Relaxed) {
