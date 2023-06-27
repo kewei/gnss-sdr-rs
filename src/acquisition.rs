@@ -31,7 +31,8 @@ pub fn do_acquisition(
     samples: Vec<u8>,
     freq_sampling: f32,
 ) -> Result<AcquistionStatistics, Box<dyn Error>> {
-    let fft_length = FFT_LENGTH_MS * freq_sampling as usize;
+    let fft_length = (FFT_LENGTH_MS as f32 * 1.0e-3 * freq_sampling) as usize;
+
     let samples_iq: Vec<Complex32> = samples
         .chunks_exact(2)
         .map(|chunk| {
@@ -45,7 +46,6 @@ pub fn do_acquisition(
 
     let mut real_planner = RealFftPlanner::<f32>::new();
     let r_fft = real_planner.plan_fft_forward(fft_length);
-    let mut ca_code_fft = r_fft.make_output_vec();
 
     let mut complex_planner = FftPlanner::new();
     let c_fft = complex_planner.plan_fft_forward(fft_length);
@@ -54,9 +54,11 @@ pub fn do_acquisition(
     let inv_fft = inv_planner.plan_fft_inverse(fft_length);
 
     let steps: i32 = 2 * FREQ_SEARCH_ACQUISITION_HZ as i32 / FREQ_SEARCH_STEP_HZ + 1;
+    let mut d_max_2d: Vec<Vec<f32>> = Vec::new();
 
     for prn in 0..PRN_SEARCH_ACQUISITION_TOTAL {
-        let ca_code = generate_ca_code(prn as usize);
+        let mut ca_code_fft = r_fft.make_output_vec();
+        let ca_code = generate_ca_code((prn + 1) as usize);
         let samples_per_chip = freq_sampling / gps_constants::GPS_L1_CA_CODE_RATE_CHIPS_PER_S;
         let ca_code_sampled: Vec<i32> = ca_code
             .iter()
@@ -65,30 +67,39 @@ pub fn do_acquisition(
         let mut ca_code_input: Vec<f32> = ca_code_sampled.iter().map(|x| *x as f32).collect();
         assert_eq!(ca_code_input.len(), fft_length);
         r_fft.process(&mut ca_code_input, &mut ca_code_fft)?;
+
+        // realfft does not calculate all fft results, so need to get the rest part
+        let mut second_part = vec![Complex32::new(0.0, 0.0); ca_code_fft.len() - 2];
+        second_part.copy_from_slice(&ca_code_fft[1..(ca_code_fft.len() - 1)]);
         let mut ca_code_fft_conj: Vec<Complex<f32>> =
             ca_code_fft.iter().map(|x| x.conj()).collect();
+        second_part.reverse();
+        ca_code_fft_conj.extend(second_part.iter());
 
         let mut d_max: Vec<f32> = vec![0.0; steps as usize];
         for step in 0..steps {
             let freq = -1.0 * FREQ_SEARCH_ACQUISITION_HZ + (step * FREQ_SEARCH_STEP_HZ) as f32;
-            let q_arm: Vec<Complex32> = (0..fft_length)
-                .map(|x| ((2.0 * PI * freq * 1.0 / freq_sampling * x as f32).cos()) * samples_iq[x])
+            let mut sum_i_q: Vec<Complex32> = (0..fft_length)
+                .map(|x| {
+                    Complex32::new(
+                        (2.0 * PI * freq * 1.0 / freq_sampling * x as f32).cos(),
+                        (2.0 * PI * freq * 1.0 / freq_sampling * x as f32).sin(),
+                    ) * samples_iq[x]
+                })
                 .collect();
-            let i_arm: Vec<Complex32> = (0..fft_length)
-                .map(|x| ((2.0 * PI * freq * 1.0 / freq_sampling * x as f32).sin()) * samples_iq[x])
-                .collect();
-            let mut c_sum: Vec<Complex32> =
-                q_arm.iter().zip(i_arm.iter()).map(|(x, y)| x + y).collect();
-            c_fft.process(&mut c_sum);
+            c_fft.process(&mut sum_i_q);
 
-            let mut cross_corr: Vec<Complex32> = c_sum
+            let mut cross_corr: Vec<Complex32> = sum_i_q
                 .iter()
                 .zip(ca_code_fft_conj.iter())
                 .map(|(x, y)| x * y)
                 .collect();
+
             inv_fft.process(&mut cross_corr);
             d_max[step as usize] = cross_corr.iter().fold(0.0, |acc, x| acc + x.norm());
         }
+
+        d_max_2d.push(d_max);
     }
 
     Ok(AcquistionStatistics {})
