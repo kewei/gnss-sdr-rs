@@ -1,6 +1,5 @@
-use realfft::{FftError, RealFftPlanner};
+use realfft::RealFftPlanner;
 use rustfft::num_complex::{Complex, Complex32};
-use rustfft::num_traits::Zero;
 use rustfft::FftPlanner;
 use std::error::Error;
 use std::f32::consts::PI;
@@ -54,7 +53,6 @@ pub fn do_acquisition(
     let inv_fft = inv_planner.plan_fft_inverse(fft_length);
 
     let steps: i32 = 2 * FREQ_SEARCH_ACQUISITION_HZ as i32 / FREQ_SEARCH_STEP_HZ + 1;
-    let mut d_max_2d: Vec<Vec<f32>> = Vec::new();
 
     for prn in 0..PRN_SEARCH_ACQUISITION_TOTAL {
         let mut ca_code_fft = r_fft.make_output_vec();
@@ -76,7 +74,7 @@ pub fn do_acquisition(
         second_part.reverse();
         ca_code_fft_conj.extend(second_part.iter());
 
-        let mut d_max: Vec<f32> = vec![0.0; steps as usize];
+        let mut d_max_2d: Vec<Vec<f32>> = Vec::with_capacity(steps as usize);
         for step in 0..steps {
             let freq = -1.0 * FREQ_SEARCH_ACQUISITION_HZ + (step * FREQ_SEARCH_STEP_HZ) as f32;
             let mut sum_i_q: Vec<Complex32> = (0..fft_length)
@@ -96,11 +94,58 @@ pub fn do_acquisition(
                 .collect();
 
             inv_fft.process(&mut cross_corr);
-            d_max[step as usize] = cross_corr.iter().fold(0.0, |acc, x| acc + x.norm());
+            d_max_2d.push(cross_corr.iter().map(|x| x.norm()).collect());
         }
-
-        d_max_2d.push(d_max);
     }
 
     Ok(AcquistionStatistics {})
+}
+
+/// Check whether the satellite is visible with Cell-Averaging Constant False Alarm Rate (CA-CFAR) algorithm
+///
+fn ca_cfar_detector(
+    corr_results: Vec<Vec<f32>>,
+    window_size: usize,
+    false_alarm_rate: f32,
+) -> Option<f32> {
+    let num_freq_bins = corr_results.len();
+    let num_cells = corr_results[0].len();
+
+    // Compute the number of guard cells and training cells based on the false alarm rate
+    let num_guard_cells = ((false_alarm_rate + 1.0)
+        * (window_size as f32 / (false_alarm_rate + 2.0)))
+        .ceil() as usize;
+    let num_training_cells = window_size - num_guard_cells * 2;
+    let mut thresholded_signal = vec![vec![0_i8; num_cells - window_size]; num_freq_bins];
+    for i in 0..num_freq_bins {
+        for j in num_guard_cells..=num_cells - window_size + num_guard_cells {
+            // Compute the average of the neighboring training cells within the window
+            let noise_lvl = (corr_results[i]
+                [j - num_guard_cells..j - num_guard_cells + num_training_cells]
+                .iter()
+                .sum::<f32>()
+                + corr_results[i]
+                    [j + num_guard_cells + 1..j + num_guard_cells + 1 + num_training_cells]
+                    .iter()
+                    .sum::<f32>())
+                / (2 * num_training_cells) as f32;
+            // Compute the threshold based on the noise level and the false alarm rate
+            let threshold =
+                noise_lvl * ((2.0_f32).powf(false_alarm_rate / num_training_cells as f32));
+
+            // Compare the current window's cells with the threshold
+            if corr_results[i][j..j + window_size]
+                .to_vec()
+                .into_iter()
+                .reduce(f32::max)
+                .unwrap()
+                > threshold
+            {
+                thresholded_signal[i][j] = 1; //Target detected in the window
+            }
+        }
+    }
+    // Check if the satellite is absent in all Doppler frequency offsets
+
+    Some(0.0)
 }
