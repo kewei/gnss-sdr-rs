@@ -29,6 +29,7 @@ pub struct AcquistionStatistics {}
 pub fn do_acquisition(
     samples: Vec<u8>,
     freq_sampling: f32,
+    freq_IF: f32,
 ) -> Result<AcquistionStatistics, Box<dyn Error>> {
     let fft_length = (FFT_LENGTH_MS as f32 * 1.0e-3 * freq_sampling) as usize;
 
@@ -76,7 +77,8 @@ pub fn do_acquisition(
 
         let mut d_max_2d: Vec<Vec<f32>> = Vec::with_capacity(steps as usize);
         for step in 0..steps {
-            let freq = -1.0 * FREQ_SEARCH_ACQUISITION_HZ + (step * FREQ_SEARCH_STEP_HZ) as f32;
+            let freq =
+                freq_IF + -1.0 * FREQ_SEARCH_ACQUISITION_HZ + (step * FREQ_SEARCH_STEP_HZ) as f32;
             let mut sum_i_q: Vec<Complex32> = (0..fft_length)
                 .map(|x| {
                     Complex32::new(
@@ -137,8 +139,7 @@ fn ca_cfar_detector(
             if corr_results[i][j..j + window_size]
                 .to_vec()
                 .into_iter()
-                .reduce(f32::max)
-                .unwrap()
+                .reduce(f32::max)?
                 > threshold
             {
                 thresholded_signal[i][j] = 1; //Target detected in the window

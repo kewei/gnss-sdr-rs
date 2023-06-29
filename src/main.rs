@@ -43,6 +43,7 @@ fn main() -> Result<(), Error> {
 
     let sampling_rate: f32 = 2.046e6;
     let frequency: u32 = 1574.42e6 as u32;
+    let freq_IF: f32 = 0.0;
     let mut gain = 0;
     let ppm_error = 0;
     //const default_buf_len: usize = 262144;
@@ -131,7 +132,7 @@ fn main() -> Result<(), Error> {
                     break;
                 }
             }
-            if let Ok(acq_result) = do_acquisition(samples_acq, sampling_rate) {
+            if let Ok(acq_result) = do_acquisition(samples_acq, sampling_rate, freq_IF) {
                 // do tracking with new data
                 if let Ok(tracking_result) = do_track(acq_result) {
                     if let Ok(pos_result) = nav_decoding(tracking_result) {
