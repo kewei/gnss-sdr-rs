@@ -1,3 +1,4 @@
+use quantiles::ckms::CKMS;
 use realfft::RealFftPlanner;
 use rustfft::num_complex::{Complex, Complex32};
 use rustfft::FftPlanner;
@@ -13,6 +14,7 @@ static FFT_LENGTH_MS: usize = 1;
 static FREQ_SEARCH_ACQUISITION_HZ: f32 = 14e3; // Hz
 static FREQ_SEARCH_STEP_HZ: i32 = 500; // Hz
 static PRN_SEARCH_ACQUISITION_TOTAL: i8 = 32; // 32 PRN codes to search
+static FALSE_ALARM_RATE: f32 = 0.0001;
 
 #[derive(Debug, Clone)]
 struct AcqError;
@@ -54,14 +56,26 @@ pub fn do_acquisition(
     let inv_fft = inv_planner.plan_fft_inverse(fft_length);
 
     let steps: i32 = 2 * FREQ_SEARCH_ACQUISITION_HZ as i32 / FREQ_SEARCH_STEP_HZ + 1;
+    // For this, the sampling frequency must be multiple of CA code rate, need to improved later todo!()
+    let samples_per_chip =
+        (freq_sampling / gps_constants::GPS_L1_CA_CODE_RATE_CHIPS_PER_S) as usize;
+
+    if let Some((rank, threshold)) = get_test_threshold(
+        samples_per_chip * gps_constants::GPS_L1_CA_CODE_LENGTH_CHIPS as usize,
+        steps as usize,
+        FALSE_ALARM_RATE,
+    ) {
+    } else {
+        todo!("Error handling!");
+    };
 
     for prn in 0..PRN_SEARCH_ACQUISITION_TOTAL {
         let mut ca_code_fft = r_fft.make_output_vec();
         let ca_code = generate_ca_code((prn + 1) as usize);
-        let samples_per_chip = freq_sampling / gps_constants::GPS_L1_CA_CODE_RATE_CHIPS_PER_S;
+
         let ca_code_sampled: Vec<i32> = ca_code
             .iter()
-            .flat_map(|&x| iter::repeat(x).take(samples_per_chip as usize))
+            .flat_map(|&x| iter::repeat(x).take(samples_per_chip))
             .collect();
         let mut ca_code_input: Vec<f32> = ca_code_sampled.iter().map(|x| *x as f32).collect();
         assert_eq!(ca_code_input.len(), fft_length);
@@ -149,4 +163,27 @@ fn ca_cfar_detector(
     // Check if the satellite is absent in all Doppler frequency offsets
 
     Some(0.0)
+}
+
+/// Calculate threshold for CA code detection
+fn get_test_threshold(
+    samplesPerCode: usize,
+    num_freq_bins: usize,
+    false_alarm_rate: f32,
+) -> Option<(usize, f32)> {
+    let num_cells = samplesPerCode * num_freq_bins;
+    let exponent = 1.0 / num_cells as f32;
+    let val = (1.0 - false_alarm_rate).powf(exponent);
+    let x: Vec<f32> = (0..10 * 100 * samplesPerCode)
+        .map(|i| i as f32 / 100.0)
+        .collect();
+    let expo: Vec<f32> = x
+        .iter()
+        .map(|a| 1.0 / samplesPerCode as f32 * (-a / samplesPerCode as f32).exp())
+        .collect();
+    let mut ckms = CKMS::<f32>::new(0.00001);
+    for ele in expo.into_iter() {
+        ckms.insert(ele);
+    }
+    ckms.query(val as f64)
 }

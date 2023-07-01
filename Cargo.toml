@@ -13,6 +13,7 @@ ringbuffer = "0.14.0"
 rustfft = "6.1.0"
 realfft = "3.3.0"
 signal-hook = "0.3.15"
+quantiles = "0.7.1"
 
 [build-dependencies]
 bindgen = "0.66.0"
