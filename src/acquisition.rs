@@ -224,8 +224,6 @@ fn get_test_threshold(
         .map(|a| 1.0 / samplesPerCode as f32 * (-a / samplesPerCode as f32).exp())
         .collect();
     let mut ckms = CKMS::<f32>::new(0.00001);
-    for ele in expo.into_iter() {
-        ckms.insert(ele);
-    }
+    expo.into_iter().for_each(|x| ckms.insert(x));
     ckms.query(val as f64)
 }
