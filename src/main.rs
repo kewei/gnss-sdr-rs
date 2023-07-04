@@ -88,7 +88,11 @@ fn main() -> Result<(), Error> {
 
     let mut ring_buffer: AllocRingBuffer<u8> =
         AllocRingBuffer::with_capacity(max_buf_len * size_of::<u8>());
-    let acq_len = 1e-3 * sampling_rate * 2.0; // Complex values
+    let num_ca_code_samples = (sampling_rate
+        / (gps_constants::GPS_L1_CA_CODE_RATE_CHIPS_PER_S
+            / gps_constants::GPS_L1_CA_CODE_LENGTH_CHIPS))
+        .round() as usize;
+    let acq_len = num_ca_code_samples * 2; // Complex values
     let term = Arc::new(AtomicBool::new(false));
     signal_hook::flag::register(signal_hook::consts::SIGTERM, Arc::clone(&term))?;
     while !term.load(Ordering::Relaxed) {
@@ -123,26 +127,28 @@ fn main() -> Result<(), Error> {
         }
         loop {
             // Could be Async process?
-            let mut samples_acq = Vec::new();
-            for _ in 0..acq_len as usize {
+            let mut samples_acq: Vec<i16> = Vec::new();
+            for _ in 0..acq_len {
                 if let Some(item) = ring_buffer.dequeue() {
-                    samples_acq.push(item);
+                    samples_acq.push(item as i16);
                 } else {
                     print!("The value in the buffer is None.");
                     break;
                 }
             }
-            if let Ok(acq_result) = do_acquisition(samples_acq, sampling_rate, freq_IF) {
+            if let Ok(acq_results) = do_acquisition(samples_acq, sampling_rate, freq_IF) {
                 // do tracking with new data
-                if let Ok(tracking_result) = do_track(acq_result) {
-                    if let Ok(pos_result) = nav_decoding(tracking_result) {
-                        break;
+                for acq_result in acq_results.into_iter() {
+                    if let Ok(tracking_result) = do_track(acq_result) {
+                        if let Ok(pos_result) = nav_decoding(tracking_result) {
+                            break;
+                        } else {
+                            todo!(); // do tracking again with new data
+                        }
                     } else {
                         todo!(); // do tracking again with new data
-                    }
-                } else {
-                    todo!(); // do tracking again with new data
-                };
+                    };
+                }
             } else {
                 continue;
             };

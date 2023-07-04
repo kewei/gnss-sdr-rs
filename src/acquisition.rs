@@ -1,3 +1,4 @@
+use puruspe::invgammp;
 use quantiles::ckms::CKMS;
 use realfft::RealFftPlanner;
 use rustfft::num_complex::{Complex, Complex32};
@@ -15,7 +16,6 @@ static FFT_LENGTH_MS: usize = 1;
 static FREQ_SEARCH_ACQUISITION_HZ: f32 = 14e3; // Hz
 static FREQ_SEARCH_STEP_HZ: i32 = 500; // Hz
 static PRN_SEARCH_ACQUISITION_TOTAL: i16 = 32; // 32 PRN codes to search
-static FALSE_ALARM_RATE: f32 = 0.0001;
 
 #[derive(Debug, Clone)]
 struct AcqError;
@@ -27,6 +27,8 @@ impl fmt::Display for AcqError {
 }
 
 impl Error for AcqError {}
+
+#[derive(Debug, Clone)]
 pub struct AcquistionStatistics {
     prn: i16,
     code_phase: usize,
@@ -35,11 +37,15 @@ pub struct AcquistionStatistics {
 }
 
 pub fn do_acquisition(
-    samples: Vec<u8>,
+    samples: Vec<i16>,
     freq_sampling: f32,
     freq_IF: f32,
 ) -> Result<Vec<AcquistionStatistics>, Box<dyn Error>> {
-    let fft_length = (FFT_LENGTH_MS as f32 * 1.0e-3 * freq_sampling) as usize;
+    let num_ca_code_samples = (freq_sampling
+        / (gps_constants::GPS_L1_CA_CODE_RATE_CHIPS_PER_S
+            / gps_constants::GPS_L1_CA_CODE_LENGTH_CHIPS))
+        .round() as usize;
+    let fft_length = num_ca_code_samples; // One CA code length
 
     let samples_iq: Vec<Complex32> = samples
         .chunks_exact(2)
@@ -65,26 +71,17 @@ pub fn do_acquisition(
     // For this, the sampling frequency must be multiple of CA code rate, need to improved later todo!()
     let samples_per_chip =
         (freq_sampling / gps_constants::GPS_L1_CA_CODE_RATE_CHIPS_PER_S) as usize;
-    let test_threhold: f32 = 0.0;
-    if let Some((rank, threshold)) = get_test_threshold(
-        samples_per_chip * gps_constants::GPS_L1_CA_CODE_LENGTH_CHIPS as usize,
-        steps as usize,
-        FALSE_ALARM_RATE,
-    ) {
-        test_threhold = threshold;
-    } else {
-        todo!("Error handling!");
-    };
 
+    let test_threhold = (2.0 * invgammp(0.8, 2.0)) as f32;
+    let ca_code_samples_all_prn = generate_ca_code_samples(freq_sampling, num_ca_code_samples);
+    let mut acq_results: Vec<AcquistionStatistics> = Vec::new();
     for prn in 0..PRN_SEARCH_ACQUISITION_TOTAL {
         let mut ca_code_fft = r_fft.make_output_vec();
-        let ca_code = generate_ca_code((prn + 1) as usize);
 
-        let ca_code_sampled: Vec<i32> = ca_code
+        let mut ca_code_input: Vec<f32> = ca_code_samples_all_prn[prn as usize]
             .iter()
-            .flat_map(|&x| iter::repeat(x).take(samples_per_chip))
+            .map(|x| *x as f32)
             .collect();
-        let mut ca_code_input: Vec<f32> = ca_code_sampled.iter().map(|x| *x as f32).collect();
         assert_eq!(ca_code_input.len(), fft_length);
         r_fft.process(&mut ca_code_input, &mut ca_code_fft)?;
 
@@ -97,8 +94,9 @@ pub fn do_acquisition(
         ca_code_fft_conj.extend(second_part.iter());
 
         let mut d_max_2d: Vec<Vec<f32>> = Vec::with_capacity(steps as usize);
+        let mut freq: f32 = 0.0;
         for step in 0..steps {
-            let freq =
+            freq =
                 freq_IF + -1.0 * FREQ_SEARCH_ACQUISITION_HZ + (step * FREQ_SEARCH_STEP_HZ) as f32;
             let mut sum_i_q: Vec<Complex32> = (0..fft_length)
                 .map(|x| {
@@ -122,12 +120,18 @@ pub fn do_acquisition(
         if let Some((code_phase, doppler_freq_step, mag_relative)) =
             satellite_detection(d_max_2d, test_threhold)
         {
+            let doppler_freq = freq - freq_IF;
+            acq_results.push(AcquistionStatistics {
+                prn: prn + 1,
+                code_phase,
+                doppler_freq,
+                mag_relative,
+            });
         } else {
-            todo!("Error handling!");
+            println!("PRN {} is not present.", prn + 1);
         }
     }
-
-    todo!();
+    Ok(acq_results)
 }
 
 /// Check whether the satellite is visible with Cell-Averaging Constant False Alarm Rate (CA-CFAR) algorithm
@@ -137,9 +141,10 @@ fn satellite_detection(corr_results: Vec<Vec<f32>>, threshold: f32) -> Option<(u
     let mut code_phase: usize = 0;
     let mut power: f32 = 0.0;
     let mut doppler_freq_step: usize = 0;
+    let mut test_statistic: f32 = 0.0;
     let num_samples = corr_results[0].len();
     for i in 0..corr_results.len() {
-        corr_results[i].iter().find(|x| x.is_nan())?; // Check whether there is nan in the data
+        corr_results[i].iter().find(|x| !(x.is_nan()))?; // Check whether there is nan in the data
         let mag_temp = corr_results[i].clone().into_iter().reduce(f32::max)?;
         let (idx, _) = corr_results[i]
             .iter()
@@ -147,83 +152,69 @@ fn satellite_detection(corr_results: Vec<Vec<f32>>, threshold: f32) -> Option<(u
             .find(|(ind, val)| **val == mag_temp)?;
         if mag_temp > mag_max {
             mag_max = mag_temp;
-            code_phase = idx;
-            doppler_freq_step = i;
             let sum: f32 = corr_results[i].iter().sum();
-            power = (sum - mag_temp) / (1.0 * num_samples as f32 - 1.0);
+            power = (sum - mag_temp) / (1.0 * num_samples as f32);
+            if mag_max / power > test_statistic {
+                test_statistic = mag_max / power;
+                code_phase = idx;
+                doppler_freq_step = i;
+            }
         }
     }
 
-    if mag_max / power > threshold {
-        Some((code_phase, doppler_freq_step, mag_max / power))
+    if test_statistic > threshold {
+        Some((code_phase, doppler_freq_step, test_statistic))
     } else {
         None
     }
 }
-/*fn ca_cfar_detector(
-    corr_results: Vec<Vec<f32>>,
-    window_size: usize,
-    false_alarm_rate: f32,
-) -> Option<f32> {
-    let num_freq_bins = corr_results.len();
-    let num_cells = corr_results[0].len();
 
-    // Compute the number of guard cells and training cells based on the false alarm rate
-    let num_guard_cells = ((false_alarm_rate + 1.0)
-        * (window_size as f32 / (false_alarm_rate + 2.0)))
-        .ceil() as usize;
-    let num_training_cells = window_size - num_guard_cells * 2;
-    let mut thresholded_signal = vec![vec![0_i8; num_cells - window_size]; num_freq_bins];
-    for i in 0..num_freq_bins {
-        for j in num_guard_cells..=num_cells - window_size + num_guard_cells {
-            // Compute the average of the neighboring training cells within the window
-            let noise_lvl = (corr_results[i]
-                [j - num_guard_cells..j - num_guard_cells + num_training_cells]
-                .iter()
-                .sum::<f32>()
-                + corr_results[i]
-                    [j + num_guard_cells + 1..j + num_guard_cells + 1 + num_training_cells]
-                    .iter()
-                    .sum::<f32>())
-                / (2 * num_training_cells) as f32;
-            // Compute the threshold based on the noise level and the false alarm rate
-            let threshold =
-                noise_lvl * ((2.0_f32).powf(false_alarm_rate / num_training_cells as f32));
-
-            // Compare the current window's cells with the threshold
-            if corr_results[i][j..j + window_size]
-                .to_vec()
-                .into_iter()
-                .reduce(f32::max)?
-                > threshold
-            {
-                thresholded_signal[i][j] = 1; //Target detected in the window
-            }
-        }
+/// Generate CA code samples for 32 PRN code based on sampling frequency which might not be multiples of CA code rate
+fn generate_ca_code_samples(f_sampling: f32, num_ca_code_samples: usize) -> Vec<Vec<i32>> {
+    let t_sampling: f32 = 1.0 / f_sampling;
+    let t_chip: f32 = 1.0 / gps_constants::GPS_L1_CA_CODE_RATE_CHIPS_PER_S;
+    let samples_ind: Vec<usize> = (0..num_ca_code_samples)
+        .map(|x| {
+            (x as f32 * gps_constants::GPS_L1_CA_CODE_RATE_CHIPS_PER_S / f_sampling).floor()
+                as usize
+        })
+        .collect();
+    let mut ca_code_samples_all_prn: Vec<Vec<i32>> = Vec::new();
+    let inner_index = 0;
+    let mut ca_code: Vec<i32> = vec![0; gps_constants::GPS_L1_CA_CODE_LENGTH_CHIPS as usize];
+    for i in 0..32 {
+        ca_code = generate_ca_code(i + 1);
+        ca_code_samples_all_prn.push(samples_ind.iter().map(|&ind| ca_code[ind]).collect());
     }
-    // Check if the satellite is absent in all Doppler frequency offsets
-
-    Some(0.0)
+    ca_code_samples_all_prn
 }
-*/
 
-/// Calculate threshold for CA code detection
-fn get_test_threshold(
-    samplesPerCode: usize,
-    num_freq_bins: usize,
-    false_alarm_rate: f32,
-) -> Option<(usize, f32)> {
-    let num_cells = samplesPerCode * num_freq_bins;
-    let exponent = 1.0 / num_cells as f32;
-    let val = (1.0 - false_alarm_rate).powf(exponent);
-    let x: Vec<f32> = (0..10 * 100 * samplesPerCode)
-        .map(|i| i as f32 / 100.0)
-        .collect();
-    let expo: Vec<f32> = x
-        .iter()
-        .map(|a| 1.0 / samplesPerCode as f32 * (-a / samplesPerCode as f32).exp())
-        .collect();
-    let mut ckms = CKMS::<f32>::new(0.00001);
-    expo.into_iter().for_each(|x| ckms.insert(x));
-    ckms.query(val as f64)
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use binrw::BinReaderExt;
+    use std::fs::File;
+
+    #[test]
+    fn test_satellite_acquistion() {
+        let mut f = File::open("src/test_data/GPS_recordings/gioveAandB_short.bin")
+            .expect("Error in opening file");
+        let f_sampling: f32 = 16.3676e6;
+        let f_inter_freq: f32 = 4.1304e6;
+        let num_ca_code_samples = (f_sampling
+            / (gps_constants::GPS_L1_CA_CODE_RATE_CHIPS_PER_S
+                / gps_constants::GPS_L1_CA_CODE_LENGTH_CHIPS))
+            .round() as usize;
+        let mut buffer: Vec<i8> = Vec::with_capacity(2 * num_ca_code_samples);
+        while buffer.len() < 2 * num_ca_code_samples {
+            buffer.push(f.read_be().expect("Error in reading data"));
+            buffer.push(0);
+        }
+
+        let buffer_samples: Vec<i16> = buffer.iter().map(|&x| x as i16).collect();
+
+        let acq_resulsts = do_acquisition(buffer_samples, f_sampling, f_inter_freq)
+            .expect("Error in Signal Acquisition");
+        dbg!(acq_resulsts);
+    }
 }

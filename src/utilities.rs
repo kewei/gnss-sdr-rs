@@ -4,6 +4,9 @@ use spectrum_analyzer::windows::hann_window;
 use spectrum_analyzer::{samples_fft_to_spectrum, FrequencyLimit};
 use std::{thread, time};
 
+const EPSILON: f64 = 1e-8;
+const MAX_ITER: usize = 100;
+
 pub fn plot_psd(samples: &[f32], fs: u32) -> Result<(), StrError> {
     let hann_window = hann_window(samples);
     // calc spectrum

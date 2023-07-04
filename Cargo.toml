@@ -7,13 +7,15 @@ edition = "2021"
 
 [dependencies]
 libc = "0.2.144"
-plotpy = "0.3.5"
+plotpy = "0.4.0"
 spectrum-analyzer = "1.4.0"
 ringbuffer = "0.14.0"
 rustfft = "6.1.0"
 realfft = "3.3.0"
 signal-hook = "0.3.15"
 quantiles = "0.7.1"
+binrw = "0.11.2"
+puruspe = "0.2.0"
 
 [build-dependencies]
 bindgen = "0.66.0"

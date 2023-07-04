@@ -1,0 +1,22 @@
+The signal sampling frequency is 16367600 Hz. The intermediate frequency is 4130400 Hz. In this record one 
+signal sample is stored as one signed byte (int8). The record length is approximately 1 second and it was made in 2008.
+
+These GPS L1 signals are present in this record (sorted from the strongest to the weakest):
+ PRN 	   Approximate Carrier Frequency       C/A Code Phase
+                    (MHz)                        (samples)
+ 2 		    4.128460 			15042
+ 3 		    4.127190		 	1618
+ 19 		4.129280 			6184
+ 14 		4.133130 			14540
+ 18 		4.127310 			344
+ 11 		4.133280 			2955
+ 32[1] 		4.134060 			6857
+ 6 		    4.127220 			7828
+ 28[2] 		4.132022 			15203
+ 9[2] 		4.132420		 	9437
+
+
+[1] PRN 32 may not be acquired in the first millisecond of the record. This is most likely due to a bit transition 
+in the navigation data.
+[2] These PRNs require acquisition algorithms which are more sensitive than the default one (5 to 9 ms integration 
+time is required).
