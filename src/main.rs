@@ -125,34 +125,32 @@ fn main() -> Result<(), Error> {
             println!("Samples are processed slower than expected! So the data is not consistent anymore.");
             break;
         }
-        loop {
-            // Could be Async process?
-            let mut samples_acq: Vec<i16> = Vec::new();
-            for _ in 0..acq_len {
-                if let Some(item) = ring_buffer.dequeue() {
-                    samples_acq.push(item as i16);
-                } else {
-                    print!("The value in the buffer is None.");
-                    break;
-                }
+
+        // Could be Async process?
+        let mut samples_input: Vec<i16> = Vec::new();
+        for _ in 0..acq_len {
+            if let Some(item) = ring_buffer.dequeue() {
+                samples_input.push(item as i16);
+            } else {
+                print!("The value in the buffer is None.");
+                break;
             }
-            if let Ok(acq_results) = do_acquisition(samples_acq, sampling_rate, freq_IF) {
-                // do tracking with new data
-                for acq_result in acq_results.into_iter() {
-                    if let Ok(tracking_result) = do_track(acq_result) {
-                        if let Ok(pos_result) = nav_decoding(tracking_result) {
-                            break;
-                        } else {
-                            todo!(); // do tracking again with new data
-                        }
-                    } else {
-                        todo!(); // do tracking again with new data
-                    };
+        }
+        if let Ok(acq_results) = do_acquisition(samples_input, sampling_rate, freq_IF) {
+            if let Ok(tracking_result) =
+                do_track(samples_input, acq_results, sampling_rate, freq_IF)
+            {
+                if let Ok(pos_result) = nav_decoding(tracking_result) {
+                    break;
+                } else {
+                    todo!(); // do tracking again with new data
                 }
             } else {
-                continue;
+                todo!(); // do tracking again with new data
             };
-        }
+        } else {
+            continue;
+        };
     }
 
     unsafe {

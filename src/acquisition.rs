@@ -1,13 +1,11 @@
 use puruspe::invgammp;
-use quantiles::ckms::CKMS;
+use rayon::prelude::*;
 use realfft::RealFftPlanner;
 use rustfft::num_complex::{Complex, Complex32};
 use rustfft::FftPlanner;
 use std::error::Error;
 use std::f32::consts::PI;
 use std::fmt;
-use std::iter;
-use std::process::id;
 
 use crate::gps_ca_prn::generate_ca_code;
 use crate::gps_constants;
@@ -30,9 +28,9 @@ impl Error for AcqError {}
 
 #[derive(Debug, Clone)]
 pub struct AcquistionStatistics {
-    prn: i16,
-    code_phase: usize,
-    doppler_freq: f32,
+    pub prn: i16,
+    pub code_phase: usize,
+    pub doppler_freq: f32,
     mag_relative: f32,
 }
 
@@ -170,7 +168,7 @@ fn satellite_detection(corr_results: Vec<Vec<f32>>, threshold: f32) -> Option<(u
 }
 
 /// Generate CA code samples for 32 PRN code based on sampling frequency which might not be multiples of CA code rate
-fn generate_ca_code_samples(f_sampling: f32, num_ca_code_samples: usize) -> Vec<Vec<i32>> {
+pub fn generate_ca_code_samples(f_sampling: f32, num_ca_code_samples: usize) -> Vec<Vec<i32>> {
     let t_sampling: f32 = 1.0 / f_sampling;
     let t_chip: f32 = 1.0 / gps_constants::GPS_L1_CA_CODE_RATE_CHIPS_PER_S;
     let samples_ind: Vec<usize> = (0..num_ca_code_samples)
@@ -194,9 +192,11 @@ mod tests {
     use super::*;
     use binrw::BinReaderExt;
     use std::fs::File;
+    use std::time::Instant;
 
     #[test]
     fn test_satellite_acquistion() {
+        let t1 = Instant::now();
         let mut f = File::open("src/test_data/GPS_recordings/gioveAandB_short.bin")
             .expect("Error in opening file");
         let f_sampling: f32 = 16.3676e6;
@@ -215,6 +215,8 @@ mod tests {
 
         let acq_resulsts = do_acquisition(buffer_samples, f_sampling, f_inter_freq)
             .expect("Error in Signal Acquisition");
-        dbg!(acq_resulsts);
+        assert!(acq_resulsts.len() > 4);
+        let t2 = t1.elapsed().as_millis();
+        println!("Elapsed time: {}ms", t2);
     }
 }
