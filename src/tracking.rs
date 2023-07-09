@@ -7,20 +7,31 @@ use crate::acquisition::AcquistionStatistics;
 use crate::gps_ca_prn::generate_ca_code;
 use crate::gps_constants;
 
-// Summation interval
-static PDI_CODE: f32 = 0.001;
-static PDI_CARR: f32 = 0.001;
 static DLL_DUMPING_RATIO: f32 = 0.7;
 static PLL_DUMPING_RATIO: f32 = 0.7;
 static DLL_NOISE_BANDWIDTH: f32 = 2.0;
 static PLL_NOISE_BANDWIDTH: f32 = 25.0;
-static PLL_SUM_CARR: f32 = 0.01;
-static DLL_SUM_CODE: f32 = 0.01;
+// Summation interval
+static PLL_SUM_CARR: f32 = 0.001;
+static DLL_SUM_CODE: f32 = 0.001;
 static PLL_GAIN: f32 = 0.25;
 static DLL_GAIN: f32 = 1.0;
 static EARLY_LATE_SPACE: f32 = 0.5;
 
-pub struct TrackingStatistics {}
+pub struct TrackingStatistics {
+    i_prompt: Vec<f32>,
+    q_prompt: Vec<f32>,
+    i_early: Vec<f32>,
+    q_early: Vec<f32>,
+    i_late: Vec<f32>,
+    q_late: Vec<f32>,
+    code_error: Vec<f32>,
+    code_error_filtered: Vec<f32>,
+    carrier_erorr: Vec<f32>,
+    carrier_error_filtered: Vec<f32>,
+    carrier_freq: Vec<f32>,
+    code_freq: Vec<f32>,
+}
 
 pub fn do_track(
     signal_input: Vec<i16>,
@@ -38,6 +49,7 @@ pub fn do_track(
             }
         })
         .collect(); // Duplicated
+
     for acq_result in acq_results {
         let num_ca_code_samples = (f_sampling
             / (gps_constants::GPS_L1_CA_CODE_RATE_CHIPS_PER_S
@@ -116,7 +128,7 @@ pub fn do_track(
 }
 
 fn costas_loop(
-    &signal_samples: &Vec<Complex32>,
+    signal_samples: &Vec<Complex32>,
     prompt_code_samples: Vec<f32>,
     freq: f32,
     carrier_error: f32,
