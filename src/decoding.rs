@@ -1,4 +1,5 @@
 use crate::tracking::TrackingStatistics;
+use std::collections::HashMap;
 use std::error::Error;
 pub struct Pos {
     x: f32,
@@ -7,6 +8,8 @@ pub struct Pos {
     t: f32,
 }
 
-pub fn nav_decoding(tracking_result: TrackingStatistics) -> Result<Pos, Box<dyn Error>> {
+pub fn nav_decoding(
+    tracking_result: HashMap<i16, TrackingStatistics>,
+) -> Result<Pos, Box<dyn Error>> {
     todo!();
 }

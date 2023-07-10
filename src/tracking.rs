@@ -1,5 +1,6 @@
 use itertools::izip;
 use rustfft::num_complex::Complex32;
+use std::collections::HashMap;
 use std::error::Error;
 use std::f32::consts::PI;
 
@@ -18,7 +19,8 @@ static PLL_GAIN: f32 = 0.25;
 static DLL_GAIN: f32 = 1.0;
 static EARLY_LATE_SPACE: f32 = 0.5;
 
-pub struct TrackingStatistics {
+#[derive(Clone)]
+pub struct TrackingResults {
     i_prompt: Vec<f32>,
     q_prompt: Vec<f32>,
     i_early: Vec<f32>,
@@ -27,10 +29,44 @@ pub struct TrackingStatistics {
     q_late: Vec<f32>,
     code_error: Vec<f32>,
     code_error_filtered: Vec<f32>,
-    carrier_erorr: Vec<f32>,
+    carrier_error: Vec<f32>,
     carrier_error_filtered: Vec<f32>,
     carrier_freq: Vec<f32>,
     code_freq: Vec<f32>,
+}
+
+impl TrackingResults {
+    fn new() -> Self {
+        Self {
+            i_prompt: Vec::new(),
+            q_prompt: Vec::new(),
+            i_early: Vec::new(),
+            q_early: Vec::new(),
+            i_late: Vec::new(),
+            q_late: Vec::new(),
+            code_error: Vec::new(),
+            code_error_filtered: Vec::new(),
+            carrier_error: Vec::new(),
+            carrier_error_filtered: Vec::new(),
+            carrier_freq: Vec::new(),
+            code_freq: Vec::new(),
+        }
+    }
+}
+
+#[derive(Clone)]
+pub struct TrackingStatistics {
+    tracking_stat: TrackingResults,
+    ca_code_prompt: Vec<Vec<f32>>,
+}
+
+impl TrackingStatistics {
+    fn new() -> Self {
+        Self {
+            tracking_stat: TrackingResults::new(),
+            ca_code_prompt: Vec::new(),
+        }
+    }
 }
 
 pub fn do_track(
@@ -38,7 +74,7 @@ pub fn do_track(
     acq_results: Vec<AcquistionStatistics>,
     f_sampling: f32,
     f_IF: f32,
-) -> Result<TrackingStatistics, Box<dyn Error>> {
+) -> Result<HashMap<i16, TrackingStatistics>, Box<dyn Error>> {
     let samples_iq: Vec<Complex32> = signal_input
         .chunks_exact(2)
         .map(|chunk| {
@@ -49,8 +85,10 @@ pub fn do_track(
             }
         })
         .collect(); // Duplicated
-
+    let mut tracking_results_map: HashMap<i16, TrackingStatistics> = HashMap::new();
     for acq_result in acq_results {
+        let mut is_existed = false;
+        let mut tracking_result = &mut TrackingStatistics::new();
         let num_ca_code_samples = (f_sampling
             / (gps_constants::GPS_L1_CA_CODE_RATE_CHIPS_PER_S
                 / gps_constants::GPS_L1_CA_CODE_LENGTH_CHIPS))
@@ -60,6 +98,11 @@ pub fn do_track(
         let doppler_freq = acq_result.doppler_freq;
         let code_phase = acq_result.code_phase;
         let freq = f_IF + doppler_freq;
+
+        if let Some(result) = tracking_results_map.get_mut(&prn) {
+            tracking_result = result;
+            is_existed = true;
+        }
 
         let code_freq: f32 = gps_constants::GPS_L1_CA_CODE_RATE_CHIPS_PER_S;
         let code_phase: f32 = 0.0;
@@ -123,8 +166,37 @@ pub fn do_track(
         ) = dll_early_late(
             q_arm, i_arm, code_freq, code_phase, code_error, code_nco, ca_code, f_sampling,
         );
+        tracking_result.tracking_stat.i_prompt.push(i_prompt);
+        tracking_result.tracking_stat.q_prompt.push(q_prompt);
+        tracking_result.tracking_stat.i_early.push(i_early);
+        tracking_result.tracking_stat.q_early.push(q_early);
+        tracking_result.tracking_stat.i_late.push(i_late);
+        tracking_result.tracking_stat.q_late.push(q_late);
+        tracking_result.tracking_stat.code_error.push(d_code_error);
+        tracking_result
+            .tracking_stat
+            .code_error_filtered
+            .push(code_nco);
+        tracking_result
+            .tracking_stat
+            .carrier_error
+            .push(carrier_error);
+        tracking_result
+            .tracking_stat
+            .carrier_error_filtered
+            .push(carrier_nco);
+        tracking_result
+            .tracking_stat
+            .carrier_freq
+            .push(carrier_freq);
+        tracking_result.tracking_stat.code_freq.push(code_freq);
+        tracking_result.ca_code_prompt.push(ca_code_prompt);
+
+        if !is_existed {
+            tracking_results_map.insert(prn, *tracking_result);
+        }
     }
-    todo!();
+    Ok(tracking_results_map)
 }
 
 fn costas_loop(
