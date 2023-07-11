@@ -85,9 +85,9 @@ pub fn do_track(
             }
         })
         .collect(); // Duplicated
-    let mut tracking_results_map: HashMap<i16, TrackingStatistics> = HashMap::new();
+    let mut tracking_results_map: Box<HashMap<i16, TrackingStatistics>> = Box::new(HashMap::new());
+    (1..=32).map(|x| tracking_results_map.insert(x, TrackingStatistics::new()));
     for acq_result in acq_results {
-        let mut is_existed = false;
         let mut tracking_result = &mut TrackingStatistics::new();
         let num_ca_code_samples = (f_sampling
             / (gps_constants::GPS_L1_CA_CODE_RATE_CHIPS_PER_S
@@ -101,8 +101,7 @@ pub fn do_track(
 
         if let Some(result) = tracking_results_map.get_mut(&prn) {
             tracking_result = result;
-            is_existed = true;
-        }
+        };
 
         let code_freq: f32 = gps_constants::GPS_L1_CA_CODE_RATE_CHIPS_PER_S;
         let code_phase: f32 = 0.0;
@@ -191,12 +190,8 @@ pub fn do_track(
             .push(carrier_freq);
         tracking_result.tracking_stat.code_freq.push(code_freq);
         tracking_result.ca_code_prompt.push(ca_code_prompt);
-
-        if !is_existed {
-            tracking_results_map.insert(prn, *tracking_result);
-        }
     }
-    Ok(tracking_results_map)
+    Ok(*tracking_results_map)
 }
 
 fn costas_loop(
