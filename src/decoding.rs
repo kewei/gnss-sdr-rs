@@ -9,7 +9,7 @@ pub struct Pos {
 }
 
 pub fn nav_decoding(
-    tracking_result: HashMap<i16, TrackingStatistics>,
+    tracking_result: &HashMap<i16, TrackingStatistics>,
 ) -> Result<Pos, Box<dyn Error>> {
     todo!();
 }

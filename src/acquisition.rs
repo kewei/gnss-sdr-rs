@@ -31,14 +31,26 @@ pub struct AcquistionStatistics {
     pub prn: i16,
     pub code_phase: usize,
     pub doppler_freq: f32,
-    mag_relative: f32,
+    pub mag_relative: f32,
+}
+
+impl AcquistionStatistics {
+    pub fn new() -> Self {
+        Self {
+            prn: 0,
+            code_phase: 0,
+            doppler_freq: 0.0,
+            mag_relative: 0.0,
+        }
+    }
 }
 
 pub fn do_acquisition(
-    samples: Vec<i16>,
+    samples: &Vec<i16>,
+    acq_statistic: &mut Vec<AcquistionStatistics>,
     freq_sampling: f32,
     freq_IF: f32,
-) -> Result<Vec<AcquistionStatistics>, Box<dyn Error>> {
+) -> Result<(), Box<dyn Error>> {
     let num_ca_code_samples = (freq_sampling
         / (gps_constants::GPS_L1_CA_CODE_RATE_CHIPS_PER_S
             / gps_constants::GPS_L1_CA_CODE_LENGTH_CHIPS))
@@ -72,7 +84,7 @@ pub fn do_acquisition(
 
     let test_threhold = (2.0 * invgammp(0.8, 2.0)) as f32;
     let ca_code_samples_all_prn = generate_ca_code_samples(freq_sampling, num_ca_code_samples);
-    let mut acq_results: Vec<AcquistionStatistics> = Vec::new();
+
     for prn in 0..PRN_SEARCH_ACQUISITION_TOTAL {
         let mut ca_code_fft = r_fft.make_output_vec();
 
@@ -119,7 +131,7 @@ pub fn do_acquisition(
             satellite_detection(d_max_2d, test_threhold)
         {
             let doppler_freq = freq - freq_IF;
-            acq_results.push(AcquistionStatistics {
+            acq_statistic.push(AcquistionStatistics {
                 prn: prn + 1,
                 code_phase,
                 doppler_freq,
@@ -129,7 +141,7 @@ pub fn do_acquisition(
             println!("PRN {} is not present.", prn + 1);
         }
     }
-    Ok(acq_results)
+    Ok(())
 }
 
 /// Check whether the satellite is visible with Cell-Averaging Constant False Alarm Rate (CA-CFAR) algorithm
@@ -212,11 +224,13 @@ mod tests {
         }
 
         let buffer_samples: Vec<i16> = buffer.iter().map(|&x| x as i16).collect();
+        let mut acq_results: Vec<AcquistionStatistics> = Vec::new();
 
-        let acq_resulsts = do_acquisition(buffer_samples, f_sampling, f_inter_freq)
+        do_acquisition(&buffer_samples, &mut acq_results, f_sampling, f_inter_freq)
             .expect("Error in Signal Acquisition");
-        assert!(acq_resulsts.len() > 4);
+        assert!(acq_results.len() > 4);
         let t2 = t1.elapsed().as_millis();
         println!("Elapsed time: {}ms", t2);
+        dbg!(acq_results);
     }
 }

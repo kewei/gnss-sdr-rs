@@ -3,6 +3,7 @@
 #![allow(non_snake_case)]
 #![allow(unused_variables)]
 
+use std::collections::HashMap;
 use std::ffi::{c_void, CString};
 use std::io::Error;
 use std::mem::size_of;
@@ -11,11 +12,13 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::{env, u8};
 mod acquisition;
-use acquisition::do_acquisition;
+use acquisition::AcquistionStatistics;
 mod tracking;
-use tracking::do_track;
+use tracking::TrackingStatistics;
 mod decoding;
 use decoding::nav_decoding;
+mod data_process;
+use crate::data_process::{do_data_process, ProcessStage};
 mod gps_ca_prn;
 mod gps_constants;
 mod utilities;
@@ -95,6 +98,14 @@ fn main() -> Result<(), Error> {
     let acq_len = num_ca_code_samples * 2; // Complex values
     let term = Arc::new(AtomicBool::new(false));
     signal_hook::flag::register(signal_hook::consts::SIGTERM, Arc::clone(&term))?;
+
+    let mut acquisition_statistic: Vec<AcquistionStatistics> = vec![AcquistionStatistics::new()];
+    let mut tracking_statistic: HashMap<i16, TrackingStatistics> = HashMap::new();
+    for i in 1..=32 {
+        tracking_statistic.insert(i, TrackingStatistics::new());
+    }
+    let mut stage = ProcessStage::SignalAcquistion;
+
     while !term.load(Ordering::Relaxed) {
         let r: i32;
 
@@ -136,21 +147,15 @@ fn main() -> Result<(), Error> {
                 break;
             }
         }
-        if let Ok(acq_results) = do_acquisition(samples_input, sampling_rate, freq_IF) {
-            if let Ok(tracking_result) =
-                do_track(samples_input, acq_results, sampling_rate, freq_IF)
-            {
-                if let Ok(pos_result) = nav_decoding(tracking_result) {
-                    break;
-                } else {
-                    todo!(); // do tracking again with new data
-                }
-            } else {
-                todo!(); // do tracking again with new data
-            };
-        } else {
-            continue;
-        };
+
+        do_data_process(
+            &samples_input,
+            sampling_rate,
+            freq_IF,
+            &mut stage,
+            &mut acquisition_statistic,
+            &mut tracking_statistic,
+        );
     }
 
     unsafe {
