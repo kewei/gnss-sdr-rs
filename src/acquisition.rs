@@ -32,6 +32,7 @@ pub struct AcquistionStatistics {
     pub code_phase: usize,
     pub doppler_freq: f32,
     pub mag_relative: f32,
+    pub ca_code: Vec<i32>,
 }
 
 impl AcquistionStatistics {
@@ -41,6 +42,7 @@ impl AcquistionStatistics {
             code_phase: 0,
             doppler_freq: 0.0,
             mag_relative: 0.0,
+            ca_code: Vec::new(),
         }
     }
 }
@@ -83,7 +85,8 @@ pub fn do_acquisition(
         (freq_sampling / gps_constants::GPS_L1_CA_CODE_RATE_CHIPS_PER_S) as usize;
 
     let test_threhold = (2.0 * invgammp(0.8, 2.0)) as f32;
-    let ca_code_samples_all_prn = generate_ca_code_samples(freq_sampling, num_ca_code_samples);
+    let (ca_code_samples_all_prn, ca_code_all_prn) =
+        generate_ca_code_samples(freq_sampling, num_ca_code_samples);
 
     for prn in 0..PRN_SEARCH_ACQUISITION_TOTAL {
         let mut ca_code_fft = r_fft.make_output_vec();
@@ -136,6 +139,7 @@ pub fn do_acquisition(
                 code_phase,
                 doppler_freq,
                 mag_relative,
+                ca_code: ca_code_all_prn[prn as usize].clone(),
             });
         } else {
             println!("PRN {} is not present.", prn + 1);
@@ -180,7 +184,10 @@ fn satellite_detection(corr_results: Vec<Vec<f32>>, threshold: f32) -> Option<(u
 }
 
 /// Generate CA code samples for 32 PRN code based on sampling frequency which might not be multiples of CA code rate
-pub fn generate_ca_code_samples(f_sampling: f32, num_ca_code_samples: usize) -> Vec<Vec<i32>> {
+pub fn generate_ca_code_samples(
+    f_sampling: f32,
+    num_ca_code_samples: usize,
+) -> (Vec<Vec<i32>>, Vec<Vec<i32>>) {
     let t_sampling: f32 = 1.0 / f_sampling;
     let t_chip: f32 = 1.0 / gps_constants::GPS_L1_CA_CODE_RATE_CHIPS_PER_S;
     let samples_ind: Vec<usize> = (0..num_ca_code_samples)
@@ -190,13 +197,15 @@ pub fn generate_ca_code_samples(f_sampling: f32, num_ca_code_samples: usize) -> 
         })
         .collect();
     let mut ca_code_samples_all_prn: Vec<Vec<i32>> = Vec::new();
+    let mut ca_code_all_prn: Vec<Vec<i32>> = Vec::new();
     let inner_index = 0;
     let mut ca_code: Vec<i32> = vec![0; gps_constants::GPS_L1_CA_CODE_LENGTH_CHIPS as usize];
     for i in 0..32 {
         ca_code = generate_ca_code(i + 1);
         ca_code_samples_all_prn.push(samples_ind.iter().map(|&ind| ca_code[ind]).collect());
+        ca_code_all_prn.push(ca_code);
     }
-    ca_code_samples_all_prn
+    (ca_code_samples_all_prn, ca_code_all_prn)
 }
 
 #[cfg(test)]
