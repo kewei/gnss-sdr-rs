@@ -310,22 +310,20 @@ fn dll_early_late(
         .ceil() as usize;
     let ca_code_early: Vec<f32> = (0..num_ca_code_samples)
         .map(|x| {
-            ca_code[(x as f32 * code_phase_step + code_phase_error - EARLY_LATE_SPACE).ceil()
-                as usize
-                + 1] as f32
+            ca_code
+                [(x as f32 * code_phase_step + code_phase_error - EARLY_LATE_SPACE).ceil() as usize]
+                as f32
         })
         .collect();
     let ca_code_late: Vec<f32> = (0..num_ca_code_samples)
         .map(|x| {
-            ca_code[(x as f32 * code_phase_step + code_phase_error + EARLY_LATE_SPACE).ceil()
-                as usize
-                + 1] as f32
+            ca_code
+                [(x as f32 * code_phase_step + code_phase_error + EARLY_LATE_SPACE).ceil() as usize]
+                as f32
         })
         .collect();
     let ca_code_prompt: Vec<f32> = (0..num_ca_code_samples)
-        .map(|x| {
-            ca_code[(x as f32 * code_phase_step + code_phase_error).ceil() as usize + 1] as f32
-        })
+        .map(|x| ca_code[(x as f32 * code_phase_step + code_phase_error).ceil() as usize] as f32)
         .collect();
     let code_phase_error =
         (num_ca_code_samples - 1) as f32 * code_phase_step + code_phase_error + code_phase_step
@@ -377,66 +375,4 @@ fn calculate_loop_efficient(noise_bw: f32, dumping_ratio: f32, gain: f32) -> (f3
     let tau1: f32 = gain / (w * w);
     let tau2: f32 = 2.0 * dumping_ratio / w;
     (tau1, tau2)
-}
-
-mod test {
-    use super::*;
-    use crate::acquisition::do_acquisition;
-    use binrw::BinReaderExt;
-    use std::fs::File;
-    use std::time::Instant;
-
-    #[test]
-    fn test_signal_tracking() {
-        let t1 = Instant::now();
-        let mut f = File::open("src/test_data/GPS_recordings/gioveAandB_short.bin")
-            .expect("Error in opening file");
-        let f_sampling: f32 = 16.3676e6;
-        let f_inter_freq: f32 = 4.1304e6;
-        let num_ca_code_samples = (f_sampling
-            / (gps_constants::GPS_L1_CA_CODE_RATE_CHIPS_PER_S
-                / gps_constants::GPS_L1_CA_CODE_LENGTH_CHIPS))
-            .round() as usize;
-        let mut buffer: Vec<i8> = Vec::with_capacity(2 * num_ca_code_samples);
-        while buffer.len() < 2 * num_ca_code_samples {
-            buffer.push(f.read_be().expect("Error in reading data"));
-            buffer.push(0);
-        }
-
-        let buffer_samples: Vec<i16> = buffer.iter().map(|&x| x as i16).collect();
-        let mut acq_results: Vec<AcquistionStatistics> = Vec::new();
-
-        do_acquisition(&buffer_samples, &mut acq_results, f_sampling, f_inter_freq)
-            .expect("Error in Signal Acquisition");
-        assert!(acq_results.len() > 4);
-        let t2 = t1.elapsed().as_millis();
-        println!("Elapsed time: {}ms", t2);
-
-        let mut tracking_statistic: HashMap<i16, TrackingStatistics> = HashMap::new();
-        for i in 1..=32 {
-            tracking_statistic.insert(i, TrackingStatistics::new());
-        }
-
-        let mut code_freq: f32 = gps_constants::GPS_L1_CA_CODE_RATE_CHIPS_PER_S;
-        let mut code_phase: f32 = 0.0;
-        loop {
-            let buffer_size = ((gps_constants::GPS_L1_CA_CODE_LENGTH_CHIPS - code_phase)
-                / (code_freq / f_sampling))
-                .ceil() as usize;
-            let mut buffer: Vec<i8> = Vec::with_capacity(2 * buffer_size);
-            while buffer.len() < 2 * buffer_size {
-                buffer.push(f.read_be().expect("Error in reading data"));
-                buffer.push(0);
-            }
-            let buffer_samples: Vec<i16> = buffer.iter().map(|&x| x as i16).collect();
-            do_track(
-                &buffer_samples,
-                &acq_results,
-                &mut tracking_statistic,
-                f_sampling,
-                f_inter_freq,
-            )
-            .expect("Error happens in tracking");
-        }
-    }
 }
