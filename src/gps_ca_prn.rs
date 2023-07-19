@@ -9,9 +9,9 @@ struct LFSR_Reg_10Bit {
 
 impl LFSR_Reg_10Bit {
     /// generate_lfsr_reg() outputs 1023 chips based on the taps or polynomial function
-    fn generate_lfsr_reg(&self) -> Vec<i32> {
-        let mut initial_state: Vec<i32> = vec![1; 10];
-        let mut reg: Vec<i32> = vec![0; CA_CODE_LENGTH];
+    fn generate_lfsr_reg(&self) -> Vec<i16> {
+        let mut initial_state: Vec<i16> = vec![1; 10];
+        let mut reg: Vec<i16> = vec![0; CA_CODE_LENGTH];
         for i in 0..CA_CODE_LENGTH {
             reg[i] = initial_state[9];
             let xor_output = self
@@ -25,7 +25,7 @@ impl LFSR_Reg_10Bit {
     }
 }
 
-pub fn generate_ca_code(prn: usize) -> Vec<i32> {
+pub fn generate_ca_code(prn: usize) -> Vec<i16> {
     //let mut ca_code = Vec::with_capacity(CA_CODE_LENGTH);
     let g2_delay = vec![
         5, 6, 7, 8, 17, 18, 139, 140, 141, 251, 252, 254, 255, 256, 257, 258, 469, 470, 471, 472,
@@ -55,7 +55,7 @@ pub fn generate_ca_code(prn: usize) -> Vec<i32> {
         .iter()
         .zip(g2_vec.iter())
         .map(|(x, y)| 2 * (x ^ y) - 1)
-        .collect::<Vec<i32>>()
+        .collect::<Vec<i16>>()
 }
 
 #[cfg(test)]

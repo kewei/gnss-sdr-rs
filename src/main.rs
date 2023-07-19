@@ -44,6 +44,7 @@ fn main() -> Result<(), Error> {
         panic!("Did not find supported device.")
     }
 
+    let signal_complex = true;
     let sampling_rate: f32 = 2.046e6;
     let frequency: u32 = 1574.42e6 as u32;
     let freq_IF: f32 = 0.0;
@@ -104,7 +105,7 @@ fn main() -> Result<(), Error> {
     for i in 1..=32 {
         tracking_statistic.insert(i, TrackingStatistics::new());
     }
-    let mut stage = ProcessStage::SignalAcquistion;
+    let mut stage = ProcessStage::SignalAcquisition;
 
     while !term.load(Ordering::Relaxed) {
         let r: i32;
@@ -155,6 +156,8 @@ fn main() -> Result<(), Error> {
             &mut stage,
             &mut acquisition_statistic,
             &mut tracking_statistic,
+            acq_len,
+            signal_complex,
         );
     }
 

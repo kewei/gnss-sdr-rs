@@ -301,7 +301,7 @@ fn dll_early_late(
     code_phase_error: f32,
     old_code_error: f32,
     code_nco: f32,
-    ca_code: Vec<i32>,
+    ca_code: Vec<i16>,
     f_sampling: f32,
 ) -> (Vec<f32>, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32) {
     let code_phase_step: f32 = code_freq / f_sampling;

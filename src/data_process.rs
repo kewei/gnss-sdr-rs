@@ -1,13 +1,14 @@
 use std::collections::HashMap;
 
-use crate::acquisition::{do_acquisition, AcquistionStatistics};
+use crate::acquisition::{do_acquisition, finer_doppler, AcquistionStatistics};
 use crate::decoding::nav_decoding;
 use crate::gps_constants;
 use crate::tracking::{do_track, TrackingStatistics};
 
 #[derive(Debug, Clone, Copy)]
 pub enum ProcessStage {
-    SignalAcquistion,
+    SignalAcquisition,
+    FinerAcquisitionDoppler,
     SignalTracking,
     MessageDecoding,
 }
@@ -19,12 +20,14 @@ pub fn do_data_process(
     stage: &mut ProcessStage,
     acquisition_statistic: &mut Vec<AcquistionStatistics>,
     tracking_statistic: &mut HashMap<i16, TrackingStatistics>,
+    length_signal_ms: usize,
+    is_complex: bool,
 ) {
     //let mut next_stage = stage;
     //let mut acq_statistic = acquire_statistic;
     //let mut tr_statistic = track_statistic;
     match stage {
-        ProcessStage::SignalAcquistion => {
+        ProcessStage::SignalAcquisition => {
             if let Ok(()) = do_acquisition(data_in, acquisition_statistic, freq_sampling, freq_IF) {
                 for acq_result in acquisition_statistic {
                     let mut tracking_result = &mut TrackingStatistics::new();
@@ -66,9 +69,21 @@ pub fn do_data_process(
                         .collect();
                     tracking_result.ca_code_prompt.push(ca_code_prompt);
                 }
-                *stage = ProcessStage::SignalTracking;
+                *stage = ProcessStage::FinerAcquisitionDoppler;
             } else {
             };
+        }
+        ProcessStage::FinerAcquisitionDoppler => {
+            if let Some(()) = finer_doppler(
+                data_in,
+                length_signal_ms,
+                is_complex,
+                acquisition_statistic,
+                freq_sampling,
+                freq_IF,
+            ) {
+                *stage = ProcessStage::SignalTracking;
+            }
         }
         ProcessStage::SignalTracking => {
             if let Ok(()) = do_track(
@@ -114,7 +129,7 @@ mod test {
             tracking_statistic.insert(i, TrackingStatistics::new());
         }
 
-        let mut stage = ProcessStage::SignalAcquistion;
+        let mut stage = ProcessStage::SignalAcquisition;
         let mut f_code = gps_constants::GPS_L1_CA_CODE_RATE_CHIPS_PER_S;
         let mut skip_samples = 0;
         let mut n = 0;
@@ -139,6 +154,8 @@ mod test {
                 &mut stage,
                 &mut acq_results,
                 &mut tracking_statistic,
+                num_ca_code_samples * 2,
+                true,
             );
             f_code = *tracking_statistic
                 .get(&3)
@@ -151,10 +168,7 @@ mod test {
             if n == 1 {
                 for acq_res in &acq_results {
                     if acq_res.prn == 3 {
-                        skip_samples = (acq_res.code_phase as f32
-                            * (f_sampling / gps_constants::GPS_L1_CA_CODE_RATE_CHIPS_PER_S))
-                            .ceil() as usize
-                            * 2;
+                        skip_samples = (acq_res.code_phase - 1) * 2;
                     }
                 }
             } else {
