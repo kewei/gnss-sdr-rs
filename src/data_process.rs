@@ -5,7 +5,7 @@ use crate::decoding::nav_decoding;
 use crate::gps_constants;
 use crate::tracking::{do_track, TrackingStatistics};
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub enum ProcessStage {
     SignalAcquisition,
     FinerAcquisitionDoppler,
@@ -36,10 +36,6 @@ pub fn do_data_process(
                     };
                     tracking_result
                         .tracking_stat
-                        .carrier_freq
-                        .push(acq_result.doppler_freq + freq_IF);
-                    tracking_result
-                        .tracking_stat
                         .code_freq
                         .push(gps_constants::GPS_L1_CA_CODE_RATE_CHIPS_PER_S);
                     tracking_result.tracking_stat.code_phase_error.push(0.0);
@@ -57,7 +53,7 @@ pub fn do_data_process(
                         0,
                         ca_code[gps_constants::GPS_L1_CA_CODE_LENGTH_CHIPS as usize - 1],
                     );
-                    ca_code.push(ca_code[0]);
+                    ca_code.push(ca_code[1]);
 
                     let code_phase_step: f32 =
                         gps_constants::GPS_L1_CA_CODE_RATE_CHIPS_PER_S / freq_sampling;
@@ -65,7 +61,7 @@ pub fn do_data_process(
                         / code_phase_step)
                         .ceil() as usize;
                     let ca_code_prompt: Vec<f32> = (0..num_ca_code_samples)
-                        .map(|x| ca_code[(x as f32 * code_phase_step).ceil() as usize + 1] as f32)
+                        .map(|x| ca_code[(x as f32 * code_phase_step).ceil() as usize] as f32)
                         .collect();
                     tracking_result.ca_code_prompt.push(ca_code_prompt);
                 }
@@ -82,6 +78,16 @@ pub fn do_data_process(
                 freq_sampling,
                 freq_IF,
             ) {
+                for acq_result in acquisition_statistic {
+                    let mut tracking_result = &mut TrackingStatistics::new();
+                    if let Some(result) = tracking_statistic.get_mut(&acq_result.prn) {
+                        tracking_result = result;
+                    };
+                    tracking_result
+                        .tracking_stat
+                        .carrier_freq
+                        .push(acq_result.carrier_freq);
+                }
                 *stage = ProcessStage::SignalTracking;
             }
         }
@@ -110,13 +116,15 @@ pub fn do_data_process(
 mod test {
     use super::*;
     use crate::acquisition::do_acquisition;
+    use crate::utilities::plot_samples;
     use binrw::BinReaderExt;
     use std::fs::File;
+    use std::io::Read;
     use std::time::Instant;
 
     #[test]
     fn test_data_process() {
-        let t1 = Instant::now();
+        let t1: Instant = Instant::now();
         let mut f = File::open("src/test_data/GPS_recordings/gioveAandB_short.bin")
             .expect("Error in opening file");
         let f_sampling: f32 = 16.3676e6;
@@ -131,20 +139,32 @@ mod test {
 
         let mut stage = ProcessStage::SignalAcquisition;
         let mut f_code = gps_constants::GPS_L1_CA_CODE_RATE_CHIPS_PER_S;
+        let mut code_phase_error: f32 = 0.0;
         let mut skip_samples = 0;
         let mut n = 0;
-        loop {
+        'outer: loop {
             let num_ca_code_samples = (f_sampling
-                / (f_code / gps_constants::GPS_L1_CA_CODE_LENGTH_CHIPS))
-                .round() as usize
+                / (f_code / (gps_constants::GPS_L1_CA_CODE_LENGTH_CHIPS - code_phase_error)))
+                .ceil() as usize
                 + skip_samples;
-            let mut buffer: Vec<i8> = Vec::with_capacity(2 * num_ca_code_samples);
-            while buffer.len() < 2 * num_ca_code_samples {
-                buffer.push(f.read_be().expect("Error in reading data"));
-                buffer.push(0);
-            }
-            buffer = buffer[skip_samples..].to_vec();
 
+            let mut length_signal_ms: usize = 1 * 2; // 1 ms complex data
+            let mut samples_length = length_signal_ms * num_ca_code_samples;
+            if stage == ProcessStage::FinerAcquisitionDoppler {
+                length_signal_ms = 11;
+                samples_length = length_signal_ms * 2 * num_ca_code_samples;
+            }
+
+            let mut buffer: Vec<i8> = Vec::with_capacity(samples_length);
+            while buffer.len() < samples_length {
+                if let Ok(byte) = f.read_be() {
+                    buffer.push(byte);
+                    buffer.push(0);
+                } else {
+                    break 'outer;
+                }
+            }
+            buffer = buffer[2 * skip_samples..].to_vec();
             let buffer_samples: Vec<i16> = buffer.iter().map(|&x| x as i16).collect();
 
             do_data_process(
@@ -154,8 +174,8 @@ mod test {
                 &mut stage,
                 &mut acq_results,
                 &mut tracking_statistic,
-                num_ca_code_samples * 2,
-                true,
+                length_signal_ms,
+                false,
             );
             f_code = *tracking_statistic
                 .get(&3)
@@ -164,16 +184,26 @@ mod test {
                 .code_freq
                 .last()
                 .unwrap();
+            code_phase_error = *tracking_statistic
+                .get(&3)
+                .unwrap()
+                .tracking_stat
+                .code_phase_error
+                .last()
+                .unwrap();
             n += 1;
-            if n == 1 {
+
+            // Skip samples for the first time tracking
+            if n == 2 {
                 for acq_res in &acq_results {
                     if acq_res.prn == 3 {
-                        skip_samples = (acq_res.code_phase - 1) * 2;
+                        skip_samples = acq_res.code_phase - 1;
                     }
                 }
             } else {
                 skip_samples = 0;
             }
         }
+        plot_samples(&tracking_statistic.get(&3).unwrap().tracking_stat.i_prompt);
     }
 }

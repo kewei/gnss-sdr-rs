@@ -1,4 +1,4 @@
-use itertools::izip;
+use itertools::{izip, Itertools};
 use rustfft::num_complex::Complex32;
 use std::collections::HashMap;
 use std::error::Error;
@@ -21,8 +21,8 @@ static EARLY_LATE_SPACE: f32 = 0.5;
 
 #[derive(Clone)]
 pub struct TrackingResults {
-    i_prompt: Vec<f32>,
-    q_prompt: Vec<f32>,
+    pub i_prompt: Vec<f32>,
+    pub q_prompt: Vec<f32>,
     i_early: Vec<f32>,
     q_early: Vec<f32>,
     i_late: Vec<f32>,
@@ -119,6 +119,7 @@ pub fn do_track(
             .code_error
             .last()
             .expect("Error occurs while reading the last code_error");
+
         let carrier_freq: f32 = *tracking_result
             .tracking_stat
             .carrier_freq
@@ -129,7 +130,6 @@ pub fn do_track(
             .carrier_phase_error
             .last()
             .expect("Error occurs while reading the last carrier_phase_error");
-
         let carrier_nco: f32 = *tracking_result
             .tracking_stat
             .carrier_error_filtered
@@ -146,7 +146,7 @@ pub fn do_track(
             0,
             ca_code[gps_constants::GPS_L1_CA_CODE_LENGTH_CHIPS as usize - 1],
         );
-        ca_code.push(ca_code[0]);
+        ca_code.push(ca_code[1]);
 
         let ca_code_prompt: Vec<f32> = tracking_result
             .ca_code_prompt
@@ -154,26 +154,25 @@ pub fn do_track(
             .expect("Error occurs while reading the last ca_code_prompt")
             .to_vec();
 
-        let (
-            carrier_freq,
-            q_prompt,
-            i_prompt,
-            carrier_error,
-            carrier_nco,
-            carrier_phase_error,
-            q_arm,
-            i_arm,
-        ) = costas_loop(
-            &samples_iq,
-            ca_code_prompt,
-            carrier_freq,
-            carrier_error,
-            carrier_phase_error,
-            carrier_nco,
-            code_freq,
-            code_phase_error,
-            f_sampling,
-        );
+        let code_phase_step: f32 = code_freq / f_sampling;
+        let num_ca_code_samples = ((gps_constants::GPS_L1_CA_CODE_LENGTH_CHIPS - code_phase_error)
+            / code_phase_step)
+            .ceil() as usize;
+
+        let (q_prompt, i_prompt, carrier_error, carrier_nco, carrier_phase_error, q_arm, i_arm) =
+            costas_loop(
+                &samples_iq,
+                ca_code_prompt,
+                num_ca_code_samples,
+                carrier_freq,
+                carrier_error,
+                carrier_phase_error,
+                carrier_nco,
+                f_sampling,
+            );
+
+        // Update carrier frequency
+        let carrier_freq = acq_result.carrier_freq + carrier_nco;
 
         let (
             ca_code_prompt,
@@ -195,6 +194,7 @@ pub fn do_track(
             code_error,
             code_nco,
             ca_code,
+            num_ca_code_samples,
             f_sampling,
         );
         tracking_result.tracking_stat.i_prompt.push(i_prompt);
@@ -237,17 +237,13 @@ pub fn do_track(
 fn costas_loop(
     signal_samples: &Vec<Complex32>,
     prompt_code_samples: Vec<f32>,
+    num_ca_code_samples: usize,
     freq: f32,
     carrier_error: f32,
     carrier_phase_error: f32,
     carrier_nco: f32,
-    code_freq: f32,
-    code_phase_error: f32,
     f_sampling: f32,
-) -> (f32, f32, f32, f32, f32, f32, Vec<f32>, Vec<f32>) {
-    let num_ca_code_samples = ((gps_constants::GPS_L1_CA_CODE_LENGTH_CHIPS - code_phase_error)
-        / (code_freq / f_sampling))
-        .ceil() as usize;
+) -> (f32, f32, f32, f32, f32, Vec<f32>, Vec<f32>) {
     let local_carrier: Vec<Complex32> = (0..num_ca_code_samples)
         .map(|x| {
             Complex32::new(
@@ -279,14 +275,10 @@ fn costas_loop(
         + (tau2_carr / tau1_carr) * (d_carrier_error - carrier_error)
         + d_carrier_error * (PLL_SUM_CARR / tau1_carr);
 
-    // Update carrier frequency
-    let carrier_freq = freq + carrier_nco;
-
     (
-        carrier_freq,
         q_prompt,
         i_prompt,
-        carrier_error,
+        d_carrier_error,
         carrier_nco,
         carrier_phase_error,
         q_arm,
@@ -302,13 +294,23 @@ fn dll_early_late(
     old_code_error: f32,
     code_nco: f32,
     ca_code: Vec<i16>,
+    num_ca_code_samples: usize,
     f_sampling: f32,
 ) -> (Vec<f32>, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32) {
     let code_phase_step: f32 = code_freq / f_sampling;
-    let num_ca_code_samples = ((gps_constants::GPS_L1_CA_CODE_LENGTH_CHIPS - code_phase_error)
-        / code_phase_step)
-        .ceil() as usize;
-    let ca_code_early: Vec<f32> = (0..num_ca_code_samples)
+    let (ca_code_early, ca_code_late, ca_code_prompt): (Vec<f32>, Vec<f32>, Vec<f32>) =
+        izip!(0..num_ca_code_samples)
+            .map(|x| {
+                (
+                    ca_code[(x as f32 * code_phase_step + code_phase_error - EARLY_LATE_SPACE)
+                        .ceil() as usize] as f32,
+                    ca_code[(x as f32 * code_phase_step + code_phase_error + EARLY_LATE_SPACE)
+                        .ceil() as usize] as f32,
+                    ca_code[(x as f32 * code_phase_step + code_phase_error).ceil() as usize] as f32,
+                )
+            })
+            .multiunzip();
+    /* let ca_code_early: Vec<f32> = (0..num_ca_code_samples)
         .map(|x| {
             ca_code
                 [(x as f32 * code_phase_step + code_phase_error - EARLY_LATE_SPACE).ceil() as usize]
@@ -324,10 +326,9 @@ fn dll_early_late(
         .collect();
     let ca_code_prompt: Vec<f32> = (0..num_ca_code_samples)
         .map(|x| ca_code[(x as f32 * code_phase_step + code_phase_error).ceil() as usize] as f32)
-        .collect();
-    let code_phase_error =
-        (num_ca_code_samples - 1) as f32 * code_phase_step + code_phase_error + code_phase_step
-            - gps_constants::GPS_L1_CA_CODE_LENGTH_CHIPS;
+        .collect(); */
+    let code_phase_error = num_ca_code_samples as f32 * code_phase_step + code_phase_error
+        - gps_constants::GPS_L1_CA_CODE_LENGTH_CHIPS;
 
     let (q_early, i_early): (Vec<f32>, Vec<f32>) = izip!(&q_arm, &i_arm, ca_code_early)
         .map(|(x, y, z)| (x * z, y * z))
@@ -354,7 +355,7 @@ fn dll_early_late(
     let code_nco = code_nco
         + (tau2_code / tau1_code) * (d_code_error - old_code_error)
         + d_code_error * (DLL_SUM_CODE / tau1_code);
-    let code_freq: f32 = code_freq - code_nco;
+    let code_freq: f32 = gps_constants::GPS_L1_CA_CODE_RATE_CHIPS_PER_S - code_nco;
     (
         ca_code_prompt,
         code_freq,

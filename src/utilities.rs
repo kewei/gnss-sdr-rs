@@ -56,3 +56,18 @@ pub fn plot_psd(samples: &[f32], fs: u32) -> Result<(), StrError> {
     thread::sleep(five_sec);
     Ok(())
 }
+
+pub fn plot_samples(samples: &[f32]) {
+    let samples_n: Vec<f32> = (0..samples.len() as u16).map(|x| f32::from(x)).collect();
+    let mut curve1 = Curve::new();
+    curve1.draw(&samples_n, &samples.to_vec());
+
+    let mut plot = Plot::new();
+    plot.set_figure_size_inches(8.0, 5.0);
+    plot.set_title("Signal samples")
+        .add(&curve1)
+        .grid_labels_legend("n", "samples")
+        .set_equal_axes(true);
+
+    plot.save_and_show("samples.svg");
+}

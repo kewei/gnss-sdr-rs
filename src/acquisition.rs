@@ -1,8 +1,10 @@
 use puruspe::invgammp;
 use rayon::prelude::*;
 use realfft::RealFftPlanner;
+use rustfft::algorithm::Radix4;
 use rustfft::num_complex::{Complex, Complex32, ComplexFloat};
 use rustfft::FftPlanner;
+use rustfft::{Fft, FftDirection};
 use std::error::Error;
 use std::f32::consts::PI;
 use std::fmt;
@@ -31,7 +33,7 @@ impl Error for AcqError {}
 pub struct AcquistionStatistics {
     pub prn: i16,
     pub code_phase: usize,
-    pub doppler_freq: f32,
+    pub carrier_freq: f32,
     pub mag_relative: f32,
     pub ca_code: Vec<i16>,
 }
@@ -41,7 +43,7 @@ impl AcquistionStatistics {
         Self {
             prn: 0,
             code_phase: 0,
-            doppler_freq: 0.0,
+            carrier_freq: 0.0,
             mag_relative: 0.0,
             ca_code: Vec::new(),
         }
@@ -108,15 +110,15 @@ pub fn do_acquisition(
         ca_code_fft_conj.extend(second_part.iter());
 
         let mut d_max_2d: Vec<Vec<f32>> = Vec::with_capacity(steps as usize);
-        let mut freq: f32 = 0.0;
+        let mut carrier_freq: f32 = 0.0;
         for step in 0..steps {
-            freq =
+            carrier_freq =
                 freq_IF + -1.0 * FREQ_SEARCH_ACQUISITION_HZ + (step * FREQ_SEARCH_STEP_HZ) as f32;
             let mut sum_i_q: Vec<Complex32> = (0..fft_length)
                 .map(|x| {
                     Complex32::new(
-                        (2.0 * PI * freq * 1.0 / freq_sampling * x as f32).cos(),
-                        (2.0 * PI * freq * 1.0 / freq_sampling * x as f32).sin(),
+                        (2.0 * PI * carrier_freq * 1.0 / freq_sampling * x as f32).cos(),
+                        (2.0 * PI * carrier_freq * 1.0 / freq_sampling * x as f32).sin(),
                     ) * samples_iq[x]
                 })
                 .collect();
@@ -134,11 +136,10 @@ pub fn do_acquisition(
         if let Some((code_phase, doppler_freq_step, mag_relative)) =
             satellite_detection(d_max_2d, test_threhold)
         {
-            let doppler_freq = freq - freq_IF;
             acq_statistic.push(AcquistionStatistics {
                 prn: prn + 1,
                 code_phase,
-                doppler_freq,
+                carrier_freq,
                 mag_relative,
                 ca_code: ca_code_all_prn[prn as usize].clone(),
             });
@@ -166,7 +167,7 @@ pub fn finer_doppler(
     freq_IF: f32,
 ) -> Option<()> {
     long_samples.iter().find(|&x| !((*x as f32).is_nan()))?; // Check whether there is nan in the data
-    let samples_iq: Vec<Complex32> = long_samples
+    let mut samples_iq: Vec<Complex32> = long_samples
         .chunks_exact(2)
         .map(|chunk| {
             if let [i, q] = chunk {
@@ -176,6 +177,8 @@ pub fn finer_doppler(
             }
         })
         .collect();
+    let mean = samples_iq.iter().sum::<Complex32>() / samples_iq.len() as f32;
+    samples_iq = samples_iq.iter().map(|x| x - mean).collect();
     let num_ca_code_samples = (freq_sampling
         / (gps_constants::GPS_L1_CA_CODE_RATE_CHIPS_PER_S
             / gps_constants::GPS_L1_CA_CODE_LENGTH_CHIPS))
@@ -185,28 +188,36 @@ pub fn finer_doppler(
         .map(|x| {
             (x as f32 * gps_constants::GPS_L1_CA_CODE_RATE_CHIPS_PER_S / freq_sampling).floor()
                 as usize
+                % gps_constants::GPS_L1_CA_CODE_LENGTH_CHIPS as usize
         })
         .collect();
 
-    let fft_size = 8 * (size_signal_use.next_power_of_two().pow(2));
-    let fft_points = ((fft_size as f32 + 1.0) / 2.0).ceil() as usize;
-    let mut complex_planner = FftPlanner::new();
-    let c_fft = complex_planner.plan_fft_forward(fft_size);
+    let fft_size: usize = 8 * size_signal_use.next_power_of_two();
+    let one_side_fft_points = ((fft_size as f32 + 1.0) / 2.0).ceil() as usize;
+    let fft_freq_bins: Vec<f32> = (0..one_side_fft_points)
+        .map(|x| x as f32 * freq_sampling / fft_size as f32)
+        .collect();
+    let c_fft = Radix4::new(fft_size, FftDirection::Forward);
+    let zero_padding: Vec<Complex32> = vec![Complex32::new(0.0, 0.0); fft_size - size_signal_use];
 
     for acq_result in acq_statistic {
         let ca_code = &acq_result.ca_code;
         let code_phase = acq_result.code_phase;
+        let mut carrier_sig: Vec<Complex32> = Vec::with_capacity(fft_size);
         let mut signal_use: Vec<Complex32> = vec![Complex32::new(0.0, 0.0); size_signal_use];
         signal_use.copy_from_slice(&samples_iq[code_phase..size_signal_use + code_phase]);
         let long_ca_code_samples: Vec<i16> = ca_code_samples_ind
             .iter()
-            .map(|&ind| ca_code[ind % gps_constants::GPS_L1_CA_CODE_LENGTH_CHIPS as usize])
+            .map(|&ind| ca_code[ind])
             .collect();
-        let mut carrier_sig: Vec<Complex32> = signal_use
-            .iter()
-            .zip(long_ca_code_samples.iter())
-            .map(|(x, y)| x * (*y as f32))
-            .collect();
+        carrier_sig.extend(
+            signal_use
+                .iter()
+                .zip(long_ca_code_samples.iter())
+                .map(|(x, y)| x * Complex32::new(*y as f32, 0.0)),
+        );
+        carrier_sig.extend(&zero_padding);
+
         c_fft.process(&mut carrier_sig);
         let mag_carrier_sig: Vec<f32> = carrier_sig.iter().map(|x| x.abs()).collect();
 
@@ -215,26 +226,25 @@ pub fn finer_doppler(
             .iter()
             .enumerate()
             .find(|(ind, val)| **val == mag_temp)?;
-        let fft_freq_bins: Vec<f32> = (0..fft_points)
-            .map(|x| x as f32 * freq_sampling / fft_points as f32)
-            .collect();
-        if idx > fft_points {
-            let fft_freq_bin_new: Vec<f32> =
-                (2..=fft_points).rev().map(|x| -fft_freq_bins[x]).collect();
-            let mag_temp = mag_carrier_sig[fft_points..]
-                .to_vec()
-                .into_iter()
+
+        if idx > one_side_fft_points {
+            let fft_freq_bin_new: Vec<f32> = (2..=one_side_fft_points)
+                .rev()
+                .map(|x| -fft_freq_bins[x])
+                .collect();
+            let mag_temp = mag_carrier_sig[one_side_fft_points..]
+                .iter()
+                .copied()
                 .reduce(f32::max)?;
-            let (idx, _) = mag_carrier_sig[fft_points..]
+            let (idx, _) = mag_carrier_sig[one_side_fft_points..]
                 .iter()
                 .enumerate()
                 .find(|(ind, val)| **val == mag_temp)?;
-            acq_result.doppler_freq = -fft_freq_bin_new[idx];
+            acq_result.carrier_freq = -fft_freq_bin_new[idx];
         } else {
-            acq_result.doppler_freq =
+            acq_result.carrier_freq =
                 ((-1i8).pow((if is_complex { 1 } else { 0 }))) as f32 * fft_freq_bins[idx];
         }
-        dbg!(acq_result.doppler_freq);
     }
     Some(())
 }
