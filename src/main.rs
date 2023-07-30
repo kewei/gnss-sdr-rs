@@ -3,26 +3,28 @@
 #![allow(non_snake_case)]
 #![allow(unused_variables)]
 
-use std::collections::HashMap;
+use ctrlc;
 use std::ffi::{c_void, CString};
 use std::io::Error;
 use std::mem::size_of;
 use std::ptr;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::{env, u8};
+use tokio::task;
 mod acquisition;
-use acquisition::AcquistionStatistics;
+use acquisition::AcquisitionResult;
 mod tracking;
-use tracking::TrackingStatistics;
+use tracking::TrackingResult;
 mod decoding;
 use decoding::nav_decoding;
 mod data_process;
 use crate::data_process::{do_data_process, ProcessStage};
+mod app_buffer_utilities;
 mod gps_ca_prn;
 mod gps_constants;
+use app_buffer_utilities::AppBuffer;
 mod utilities;
-use ringbuffer::{AllocRingBuffer, RingBuffer, RingBufferRead, RingBufferWrite};
 
 include!(concat!(env!("OUT_DIR"), "/bindings.rs"));
 
@@ -90,75 +92,59 @@ fn main() -> Result<(), Error> {
         verbose_reset_buffer(dev); // Reset endpoint before we start reading from it (mandatory)
     }
 
-    let mut ring_buffer: AllocRingBuffer<u8> =
-        AllocRingBuffer::with_capacity(max_buf_len * size_of::<u8>());
-    let num_ca_code_samples = (sampling_rate
-        / (gps_constants::GPS_L1_CA_CODE_RATE_CHIPS_PER_S
-            / gps_constants::GPS_L1_CA_CODE_LENGTH_CHIPS))
-        .round() as usize;
-    let acq_len = num_ca_code_samples * 2; // Complex values
-    let term = Arc::new(AtomicBool::new(false));
-    signal_hook::flag::register(signal_hook::consts::SIGTERM, Arc::clone(&term))?;
+    // Ctrl-C interruption
+    let term = Arc::new(AtomicBool::new(true));
+    let r = term.clone();
 
-    let mut acquisition_statistic: Vec<AcquistionStatistics> = vec![AcquistionStatistics::new()];
-    let mut tracking_statistic: HashMap<i16, TrackingStatistics> = HashMap::new();
-    for i in 1..=32 {
-        tracking_statistic.insert(i, TrackingStatistics::new());
-    }
-    let mut stage = ProcessStage::SignalAcquisition;
+    ctrlc::set_handler(move || {
+        r.store(false, Ordering::SeqCst);
+    })
+    .expect("Error setting Ctrl-C handler");
 
-    while !term.load(Ordering::Relaxed) {
-        let r: i32;
-
-        unsafe {
-            r = rtlsdr_read_sync(dev, buf as *mut c_void, buff_len as i32, &mut n_read);
-        }
-
-        if r < 0 {
-            println!("WARNING: sync read failed.");
-            break;
-        } else {
-            if (bytes_read > 0) && ((bytes_read as i32) < n_read) {
-                n_read = bytes_read as i32;
-                break;
-            }
-            if n_read < buff_len as i32 {
-                println!("WARNING: short read! Exit!");
-            }
-
-            if bytes_read > 0 {
-                bytes_read -= n_read as u32;
-            }
-            ring_buffer.extend(buf_vec.into_iter());
-            //let buf_vec_f32: Vec<f32> = buf_vec.to_vec().iter().map(|x| f32::from(*x)).collect();
-            //utilities::plot_psd(&buf_vec_f32, sampling_rate as u32);
-        }
-        if ring_buffer.is_full() {
-            println!("Samples are processed slower than expected! So the data is not consistent anymore.");
-            break;
-        }
-
-        // Could be Async process?
-        let mut samples_input: Vec<i16> = Vec::new();
-        for _ in 0..acq_len {
-            if let Some(item) = ring_buffer.dequeue() {
-                samples_input.push(item as i16);
-            } else {
-                print!("The value in the buffer is None.");
-                break;
-            }
-        }
-
-        do_data_process(
-            &samples_input,
-            sampling_rate,
-            freq_IF,
-            &mut stage,
-            &mut acquisition_statistic,
-            &mut tracking_statistic,
-            acq_len,
-            signal_complex,
+    // Start RTL_SDR
+    let r: i32;
+    unsafe {
+        r = rtl_sdr_read_async_wrapper(
+            dev,
+            app_buffer_utilities::RTL_BUFF_NUM as u32,
+            app_buffer_utilities::BUFFER_SIZE as u32,
         );
+    }
+
+    if r < 0 {
+        panic!("WARNING: RTL-SDR buffer async read failed.");
+    }
+
+    let mut acquisition_results: Vec<Arc<Mutex<AcquisitionResult>>> = Vec::new();
+    let mut tracking_results: Vec<Arc<Mutex<TrackingResult>>> = Vec::new();
+    let mut stages_all: Vec<Arc<Mutex<ProcessStage>>> = Vec::new();
+    for i in 1..=32 {
+        let acq_result: AcquisitionResult = AcquisitionResult::new(i, sampling_rate);
+        acquisition_results.push(Arc::new(Mutex::new(acq_result)));
+        let trk_result = TrackingResult::new(i);
+        tracking_results.push(Arc::new(Mutex::new(trk_result)));
+        stages_all.push(Arc::new(Mutex::new(ProcessStage::SignalAcquisition)));
+    }
+
+    let mut app_buff = AppBuffer::new();
+    for i in 0..32 {
+        let acq_result_clone = Arc::clone(&acquisition_results[i]);
+        let trk_result_clone = Arc::clone(&tracking_results[i]);
+        let stage_clone = Arc::clone(&stages_all[i]);
+        let stop_signal_clone = Arc::clone(&term);
+        task::spawn(async move {
+            do_data_process(
+                sampling_rate,
+                freq_IF,
+                stage_clone,
+                acq_result_clone,
+                trk_result_clone,
+                signal_complex,
+                0,
+                stop_signal_clone,
+            )
+            .await;
+        });
     }
 
     unsafe {

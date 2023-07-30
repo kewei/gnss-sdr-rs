@@ -4,7 +4,8 @@ use std::collections::HashMap;
 use std::error::Error;
 use std::f32::consts::PI;
 
-use crate::acquisition::AcquistionStatistics;
+use crate::acquisition::AcquisitionResult;
+use crate::app_buffer_utilities::get_current_buffer;
 use crate::gps_ca_prn::generate_ca_code;
 use crate::gps_constants;
 
@@ -20,66 +21,62 @@ static DLL_GAIN: f32 = 1.0;
 static EARLY_LATE_SPACE: f32 = 0.5;
 
 #[derive(Clone)]
-pub struct TrackingResults {
-    pub i_prompt: Vec<f32>,
-    pub q_prompt: Vec<f32>,
-    i_early: Vec<f32>,
-    q_early: Vec<f32>,
-    i_late: Vec<f32>,
-    q_late: Vec<f32>,
-    pub code_error: Vec<f32>,
-    pub code_error_filtered: Vec<f32>,
-    pub code_phase_error: Vec<f32>,
-    pub code_freq: Vec<f32>,
-    pub carrier_error: Vec<f32>,
-    pub carrier_error_filtered: Vec<f32>,
-    pub carrier_phase_error: Vec<f32>,
-    pub carrier_freq: Vec<f32>,
+pub struct TrackingResult {
+    pub prn: usize,
+    pub i_prompt: f32,
+    pub q_prompt: f32,
+    pub i_early: f32,
+    pub q_early: f32,
+    pub i_late: f32,
+    pub q_late: f32,
+    pub code_error: f32,
+    pub code_error_filtered: f32,
+    pub code_phase_error: f32,
+    pub code_freq: f32,
+    pub carrier_error: f32,
+    pub carrier_error_filtered: f32,
+    pub carrier_phase_error: f32,
+    pub carrier_freq: f32,
+    pub ca_code_prompt: Vec<f32>,
 }
 
-impl TrackingResults {
-    fn new() -> Self {
+impl TrackingResult {
+    pub fn new(prn: usize) -> Self {
         Self {
-            i_prompt: Vec::new(),
-            q_prompt: Vec::new(),
-            i_early: Vec::new(),
-            q_early: Vec::new(),
-            i_late: Vec::new(),
-            q_late: Vec::new(),
-            code_error: Vec::new(),
-            code_error_filtered: Vec::new(),
-            code_phase_error: Vec::new(),
-            code_freq: Vec::new(),
-            carrier_error: Vec::new(),
-            carrier_error_filtered: Vec::new(),
-            carrier_phase_error: Vec::new(),
-            carrier_freq: Vec::new(),
-        }
-    }
-}
-
-#[derive(Clone)]
-pub struct TrackingStatistics {
-    pub tracking_stat: TrackingResults,
-    pub ca_code_prompt: Vec<Vec<f32>>,
-}
-
-impl TrackingStatistics {
-    pub fn new() -> Self {
-        Self {
-            tracking_stat: TrackingResults::new(),
+            prn,
+            i_prompt: 0.0,
+            q_prompt: 0.0,
+            i_early: 0.0,
+            q_early: 0.0,
+            i_late: 0.0,
+            q_late: 0.0,
+            code_error: 0.0,
+            code_error_filtered: 0.0,
+            code_phase_error: 0.0,
+            code_freq: 0.0,
+            carrier_error: 0.0,
+            carrier_error_filtered: 0.0,
+            carrier_phase_error: 0.0,
+            carrier_freq: 0.0,
             ca_code_prompt: Vec::new(),
         }
     }
 }
 
 pub fn do_track(
-    signal_input: &Vec<i16>,
-    acq_results: &Vec<AcquistionStatistics>,
-    tracking_statistic: &mut HashMap<i16, TrackingStatistics>,
+    acq_result: &AcquisitionResult,
+    trk_result: &mut TrackingResult,
     f_sampling: f32,
     f_IF: f32,
+    buffer_location: usize,
 ) -> Result<(), Box<dyn Error>> {
+    let prn = acq_result.prn;
+    let code_freq: f32 = trk_result.code_freq;
+    let code_phase_step: f32 = code_freq / f_sampling;
+    let num_ca_code_samples =
+        (gps_constants::GPS_L1_CA_CODE_LENGTH_CHIPS / code_phase_step).ceil() as usize;
+
+    let signal_input = get_current_buffer(buffer_location, num_ca_code_samples);
     let samples_iq: Vec<Complex32> = signal_input
         .chunks_exact(2)
         .map(|chunk| {
@@ -91,146 +88,83 @@ pub fn do_track(
         })
         .collect(); // Duplicated
 
-    for acq_result in acq_results {
-        let mut tracking_result = &mut TrackingStatistics::new();
-        let prn = acq_result.prn;
+    let code_phase_error: f32 = trk_result.code_phase_error;
+    let code_nco: f32 = trk_result.code_error_filtered;
+    let code_error: f32 = trk_result.code_error;
 
-        if let Some(result) = tracking_statistic.get_mut(&prn) {
-            tracking_result = result;
-        };
+    let carrier_freq: f32 = trk_result.carrier_freq;
+    let carrier_phase_error: f32 = trk_result.carrier_phase_error;
+    let carrier_nco: f32 = trk_result.carrier_error_filtered;
+    let carrier_error: f32 = trk_result.carrier_error;
 
-        let code_freq: f32 = *tracking_result
-            .tracking_stat
-            .code_freq
-            .last()
-            .expect("Error occurs while reading the last code_freq");
-        let code_phase_error: f32 = *tracking_result
-            .tracking_stat
-            .code_phase_error
-            .last()
-            .expect("Error occurs while reading the last code_phase_error");
-        let code_nco: f32 = *tracking_result
-            .tracking_stat
-            .code_error_filtered
-            .last()
-            .expect("Error occurs while reading the last code_error_filtered");
-        let code_error: f32 = *tracking_result
-            .tracking_stat
-            .code_error
-            .last()
-            .expect("Error occurs while reading the last code_error");
+    let mut ca_code = acq_result.ca_code.clone();
+    ca_code.insert(
+        0,
+        ca_code[gps_constants::GPS_L1_CA_CODE_LENGTH_CHIPS as usize - 1],
+    );
+    ca_code.push(ca_code[1]);
 
-        let carrier_freq: f32 = *tracking_result
-            .tracking_stat
-            .carrier_freq
-            .last()
-            .expect("Error occurs while reading the last carrier_freq");
-        let carrier_phase_error: f32 = *tracking_result
-            .tracking_stat
-            .carrier_phase_error
-            .last()
-            .expect("Error occurs while reading the last carrier_phase_error");
-        let carrier_nco: f32 = *tracking_result
-            .tracking_stat
-            .carrier_error_filtered
-            .last()
-            .expect("Error occurs while reading the last carrier_error_filtered");
-        let carrier_error: f32 = *tracking_result
-            .tracking_stat
-            .carrier_error
-            .last()
-            .expect("Error occurs while reading the last carrier_error");
+    let ca_code_prompt: Vec<f32> = trk_result.ca_code_prompt.to_vec();
 
-        let mut ca_code = acq_result.ca_code.clone();
-        ca_code.insert(
-            0,
-            ca_code[gps_constants::GPS_L1_CA_CODE_LENGTH_CHIPS as usize - 1],
-        );
-        ca_code.push(ca_code[1]);
+    let code_phase_step: f32 = code_freq / f_sampling;
+    let num_ca_code_samples = ((gps_constants::GPS_L1_CA_CODE_LENGTH_CHIPS - code_phase_error)
+        / code_phase_step)
+        .ceil() as usize;
 
-        let ca_code_prompt: Vec<f32> = tracking_result
-            .ca_code_prompt
-            .last()
-            .expect("Error occurs while reading the last ca_code_prompt")
-            .to_vec();
-
-        let code_phase_step: f32 = code_freq / f_sampling;
-        let num_ca_code_samples = ((gps_constants::GPS_L1_CA_CODE_LENGTH_CHIPS - code_phase_error)
-            / code_phase_step)
-            .ceil() as usize;
-
-        let (q_prompt, i_prompt, carrier_error, carrier_nco, carrier_phase_error, q_arm, i_arm) =
-            costas_loop(
-                &samples_iq,
-                ca_code_prompt,
-                num_ca_code_samples,
-                carrier_freq,
-                carrier_error,
-                carrier_phase_error,
-                carrier_nco,
-                f_sampling,
-            );
-
-        // Update carrier frequency
-        let carrier_freq = acq_result.carrier_freq + carrier_nco;
-
-        let (
+    let (q_prompt, i_prompt, carrier_error, carrier_nco, carrier_phase_error, q_arm, i_arm) =
+        costas_loop(
+            &samples_iq,
             ca_code_prompt,
-            code_freq,
-            d_code_error,
-            code_nco,
-            code_phase_error,
-            i_early,
-            q_early,
-            i_late,
-            q_late,
-            i_prompt,
-            q_prompt,
-        ) = dll_early_late(
-            q_arm,
-            i_arm,
-            code_freq,
-            code_phase_error,
-            code_error,
-            code_nco,
-            ca_code,
             num_ca_code_samples,
+            carrier_freq,
+            carrier_error,
+            carrier_phase_error,
+            carrier_nco,
             f_sampling,
         );
-        tracking_result.tracking_stat.i_prompt.push(i_prompt);
-        tracking_result.tracking_stat.q_prompt.push(q_prompt);
-        tracking_result.tracking_stat.i_early.push(i_early);
-        tracking_result.tracking_stat.q_early.push(q_early);
-        tracking_result.tracking_stat.i_late.push(i_late);
-        tracking_result.tracking_stat.q_late.push(q_late);
-        tracking_result.tracking_stat.code_error.push(d_code_error);
-        tracking_result
-            .tracking_stat
-            .code_error_filtered
-            .push(code_nco);
-        tracking_result
-            .tracking_stat
-            .code_phase_error
-            .push(code_phase_error);
-        tracking_result
-            .tracking_stat
-            .carrier_error
-            .push(carrier_error);
-        tracking_result
-            .tracking_stat
-            .carrier_error_filtered
-            .push(carrier_nco);
-        tracking_result
-            .tracking_stat
-            .carrier_phase_error
-            .push(carrier_phase_error);
-        tracking_result
-            .tracking_stat
-            .carrier_freq
-            .push(carrier_freq);
-        tracking_result.tracking_stat.code_freq.push(code_freq);
-        tracking_result.ca_code_prompt.push(ca_code_prompt);
-    }
+
+    // Update carrier frequency
+    let carrier_freq = acq_result.carrier_freq + carrier_nco;
+
+    let (
+        ca_code_prompt,
+        code_freq,
+        d_code_error,
+        code_nco,
+        code_phase_error,
+        i_early,
+        q_early,
+        i_late,
+        q_late,
+        i_prompt,
+        q_prompt,
+    ) = dll_early_late(
+        q_arm,
+        i_arm,
+        code_freq,
+        code_phase_error,
+        code_error,
+        code_nco,
+        ca_code,
+        num_ca_code_samples,
+        f_sampling,
+    );
+    trk_result.i_prompt = i_prompt;
+    trk_result.q_prompt = q_prompt;
+    trk_result.i_early = i_early;
+    trk_result.q_early = q_early;
+    trk_result.i_late = i_late;
+    trk_result.q_late = q_late;
+    trk_result.code_error = d_code_error;
+    trk_result.code_error_filtered = code_nco;
+    trk_result.code_phase_error = code_phase_error;
+    trk_result.carrier_error = carrier_error;
+    trk_result.carrier_error_filtered = carrier_nco;
+    trk_result.carrier_phase_error = carrier_phase_error;
+    trk_result.carrier_freq = carrier_freq;
+    trk_result.code_freq = code_freq;
+    trk_result.ca_code_prompt = ca_code_prompt;
+
     Ok(())
 }
 

@@ -6,6 +6,7 @@ use std::path::PathBuf;
 fn main() {
     println!("cargo:rustc-link-search={}", "src/c_lib");
     println!("cargo:rustc-link-lib=convenience");
+    println!("cargo:rustc-link-lib=rtl_sdr_wrapper");
     println!("cargo:rustc-link-search={}", "/usr/local/lib");
     println!("cargo:rustc-link-lib=rtlsdr");
 

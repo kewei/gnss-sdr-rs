@@ -1,52 +1,51 @@
-use std::collections::HashMap;
-
-use crate::acquisition::{do_acquisition, finer_doppler, AcquistionStatistics};
+use crate::acquisition::{do_acquisition, AcquisitionResult};
+use crate::app_buffer_utilities::get_current_buffer;
 use crate::decoding::nav_decoding;
 use crate::gps_constants;
-use crate::tracking::{do_track, TrackingStatistics};
+use crate::tracking::{do_track, TrackingResult};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum ProcessStage {
     SignalAcquisition,
-    FinerAcquisitionDoppler,
     SignalTracking,
     MessageDecoding,
 }
 
-pub fn do_data_process(
-    data_in: &Vec<i16>,
+pub async fn do_data_process(
     freq_sampling: f32,
     freq_IF: f32,
-    stage: &mut ProcessStage,
-    acquisition_statistic: &mut Vec<AcquistionStatistics>,
-    tracking_statistic: &mut HashMap<i16, TrackingStatistics>,
-    length_signal_ms: usize,
+    stage_thread: Arc<Mutex<ProcessStage>>,
+    acq_result_thread: Arc<Mutex<AcquisitionResult>>,
+    tracking_result_thread: Arc<Mutex<TrackingResult>>,
     is_complex: bool,
+    buffer_location: usize,
+    term_signal: Arc<AtomicBool>,
 ) {
-    //let mut next_stage = stage;
-    //let mut acq_statistic = acquire_statistic;
-    //let mut tr_statistic = track_statistic;
-    match stage {
-        ProcessStage::SignalAcquisition => {
-            if let Ok(()) = do_acquisition(data_in, acquisition_statistic, freq_sampling, freq_IF) {
-                for acq_result in acquisition_statistic {
-                    let mut tracking_result = &mut TrackingStatistics::new();
-                    if let Some(result) = tracking_statistic.get_mut(&acq_result.prn) {
-                        tracking_result = result;
-                    };
-                    tracking_result
-                        .tracking_stat
-                        .code_freq
-                        .push(gps_constants::GPS_L1_CA_CODE_RATE_CHIPS_PER_S);
-                    tracking_result.tracking_stat.code_phase_error.push(0.0);
-                    tracking_result.tracking_stat.carrier_phase_error.push(0.0);
-                    tracking_result.tracking_stat.code_error_filtered.push(0.0);
-                    tracking_result.tracking_stat.code_error.push(0.0);
-                    tracking_result
-                        .tracking_stat
-                        .carrier_error_filtered
-                        .push(0.0);
-                    tracking_result.tracking_stat.carrier_error.push(0.0);
+    while !term_signal.load(Ordering::SeqCst) {
+        let mut acq_result = acq_result_thread
+            .lock()
+            .expect("Error in locking 'AcquistionResult' thread");
+        let mut stage = stage_thread
+            .lock()
+            .expect("Error in locking 'ProcessStage' in thread");
+        let mut tracking_result = tracking_result_thread
+            .lock()
+            .expect("Error in locking 'TrackingResult' thread");
+        match *stage {
+            ProcessStage::SignalAcquisition => {
+                if let Ok(()) =
+                    do_acquisition(&mut *acq_result, freq_sampling, freq_IF, buffer_location)
+                {
+                    tracking_result.carrier_freq = acq_result.carrier_freq;
+                    tracking_result.code_freq = gps_constants::GPS_L1_CA_CODE_RATE_CHIPS_PER_S;
+                    tracking_result.code_phase_error = 0.0;
+                    tracking_result.carrier_phase_error = 0.0;
+                    tracking_result.code_error_filtered = 0.0;
+                    tracking_result.code_error = 0.0;
+                    tracking_result.carrier_error_filtered = 0.0;
+                    tracking_result.carrier_error = 0.0;
 
                     let mut ca_code = acq_result.ca_code.clone();
                     ca_code.insert(
@@ -63,56 +62,38 @@ pub fn do_data_process(
                     let ca_code_prompt: Vec<f32> = (0..num_ca_code_samples)
                         .map(|x| ca_code[(x as f32 * code_phase_step).ceil() as usize] as f32)
                         .collect();
-                    tracking_result.ca_code_prompt.push(ca_code_prompt);
-                }
-                *stage = ProcessStage::FinerAcquisitionDoppler;
-            } else {
-            };
-        }
-        ProcessStage::FinerAcquisitionDoppler => {
-            if let Some(()) = finer_doppler(
-                data_in,
-                length_signal_ms,
-                is_complex,
-                acquisition_statistic,
-                freq_sampling,
-                freq_IF,
-            ) {
-                for acq_result in acquisition_statistic {
-                    let mut tracking_result = &mut TrackingStatistics::new();
-                    if let Some(result) = tracking_statistic.get_mut(&acq_result.prn) {
-                        tracking_result = result;
-                    };
-                    tracking_result
-                        .tracking_stat
-                        .carrier_freq
-                        .push(acq_result.carrier_freq);
-                }
-                *stage = ProcessStage::SignalTracking;
+                    tracking_result.ca_code_prompt = ca_code_prompt;
+
+                    *stage = ProcessStage::SignalTracking;
+                } else {
+                };
             }
-        }
-        ProcessStage::SignalTracking => {
-            if let Ok(()) = do_track(
-                data_in,
-                acquisition_statistic,
-                tracking_statistic,
-                freq_sampling,
-                freq_IF,
-            ) {
-                *stage = ProcessStage::SignalTracking;
-            } else {
-                todo!(); // do tracking again with new data
-            };
-        }
-        ProcessStage::MessageDecoding => {
-            if let Ok(pos_result) = nav_decoding(tracking_statistic) {
-            } else {
-                todo!(); // do tracking again with new data
+
+            ProcessStage::SignalTracking => {
+                if let Ok(()) = do_track(
+                    &mut *acq_result,
+                    &mut *tracking_result,
+                    freq_sampling,
+                    freq_IF,
+                    buffer_location,
+                ) {
+                    *stage = ProcessStage::SignalTracking;
+                } else {
+                    todo!(); // do tracking again with new data
+                };
+            }
+
+            ProcessStage::MessageDecoding => {
+                if let Ok(pos_result) = nav_decoding(&mut *tracking_result) {
+                } else {
+                    todo!(); // do tracking again with new data
+                }
             }
         }
     }
 }
 
+/*
 mod test {
     use super::*;
     use crate::acquisition::do_acquisition;
@@ -207,3 +188,5 @@ mod test {
         plot_samples(&tracking_statistic.get(&3).unwrap().tracking_stat.i_prompt);
     }
 }
+
+*/
