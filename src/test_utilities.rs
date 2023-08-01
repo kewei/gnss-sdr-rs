@@ -1,13 +1,20 @@
-use plotpy::{Curve, Plot, StrError};
+use byteorder::{BigEndian, ReadBytesExt};
+use plotpy::{Curve, Plot};
 use spectrum_analyzer::scaling::divide_by_N_sqrt;
 use spectrum_analyzer::windows::hann_window;
 use spectrum_analyzer::{samples_fft_to_spectrum, FrequencyLimit};
+use std::fs::File;
+use std::io::{BufReader, Read, Result};
+use std::sync::Arc;
 use std::{thread, time};
+
+use crate::app_buffer_utilities;
+use app_buffer_utilities::{APPBUFF, APP_BUFFER_NUM};
 
 const EPSILON: f64 = 1e-8;
 const MAX_ITER: usize = 100;
 
-pub fn plot_psd(samples: &[f32], fs: u32) -> Result<(), StrError> {
+pub fn plot_psd(samples: &[f32], fs: u32) -> Result<()> {
     let hann_window = hann_window(samples);
     // calc spectrum
     let spectrum_hann_window = samples_fft_to_spectrum(
@@ -70,4 +77,29 @@ pub fn plot_samples(samples: &[f32]) {
         .set_equal_axes(true);
 
     plot.save_and_show("samples.svg");
+}
+
+///
+/// - f_name: file path
+pub fn read_data_file(f_name: &str) -> Result<()> {
+    let f = File::open(f_name)?;
+    let mut buff_read = BufReader::new(f);
+    loop {
+        let mut values = [0; 2 * app_buffer_utilities::BUFFER_SIZE];
+        buff_read.read_exact(&mut values[..])?;
+        if values.len() != 2 * app_buffer_utilities::BUFFER_SIZE {
+            break;
+        }
+        let added_data = unsafe { APPBUFF.buff_producer.push_slice(&values) };
+        let cnt_clone = unsafe { Arc::clone(&(APPBUFF.buff_cnt)) };
+        let mut cnt_val = cnt_clone
+            .write()
+            .expect("Error in locking when incrementing buff_cnt of AppBuffer");
+        *cnt_val = (*cnt_val + 1) % APP_BUFFER_NUM;
+
+        let ten_ms = time::Duration::from_millis(10);
+        thread::sleep(ten_ms);
+    }
+
+    Ok(())
 }

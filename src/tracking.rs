@@ -3,6 +3,7 @@ use rustfft::num_complex::Complex32;
 use std::collections::HashMap;
 use std::error::Error;
 use std::f32::consts::PI;
+use std::sync::{Arc, Mutex};
 
 use crate::acquisition::AcquisitionResult;
 use crate::app_buffer_utilities::get_current_buffer;
@@ -20,7 +21,7 @@ static PLL_GAIN: f32 = 0.25;
 static DLL_GAIN: f32 = 1.0;
 static EARLY_LATE_SPACE: f32 = 0.5;
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct TrackingResult {
     pub prn: usize,
     pub i_prompt: f32,
@@ -53,7 +54,7 @@ impl TrackingResult {
             code_error: 0.0,
             code_error_filtered: 0.0,
             code_phase_error: 0.0,
-            code_freq: 0.0,
+            code_freq: gps_constants::GPS_L1_CA_CODE_RATE_CHIPS_PER_S,
             carrier_error: 0.0,
             carrier_error_filtered: 0.0,
             carrier_phase_error: 0.0,
@@ -64,12 +65,18 @@ impl TrackingResult {
 }
 
 pub fn do_track(
-    acq_result: &AcquisitionResult,
-    trk_result: &mut TrackingResult,
+    acquisition_result: Arc<Mutex<AcquisitionResult>>,
+    tracking_result: Arc<Mutex<TrackingResult>>,
     f_sampling: f32,
     f_IF: f32,
     buffer_location: usize,
 ) -> Result<(), Box<dyn Error>> {
+    let mut acq_result = acquisition_result
+        .lock()
+        .expect("Error in locking in tracking");
+    let mut trk_result = tracking_result
+        .lock()
+        .expect("Error in locking in tracking");
     let prn = acq_result.prn;
     let code_freq: f32 = trk_result.code_freq;
     let code_phase_step: f32 = code_freq / f_sampling;
@@ -164,6 +171,8 @@ pub fn do_track(
     trk_result.carrier_freq = carrier_freq;
     trk_result.code_freq = code_freq;
     trk_result.ca_code_prompt = ca_code_prompt;
+
+    dbg!(&tracking_result);
 
     Ok(())
 }

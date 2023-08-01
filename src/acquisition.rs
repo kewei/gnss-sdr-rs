@@ -1,4 +1,3 @@
-use once_cell::sync::Lazy;
 use puruspe::invgammp;
 use rayon::prelude::*;
 use realfft::RealFftPlanner;
@@ -9,7 +8,7 @@ use rustfft::{Fft, FftDirection};
 use std::error::Error;
 use std::f32::consts::PI;
 use std::fmt;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use crate::app_buffer_utilities::get_current_buffer;
 use crate::gps_ca_prn::generate_ca_code;
@@ -18,7 +17,7 @@ use crate::gps_constants;
 static FFT_LENGTH_MS: usize = 1;
 static FREQ_SEARCH_ACQUISITION_HZ: f32 = 14e3; // Hz
 static FREQ_SEARCH_STEP_HZ: i32 = 500; // Hz
-static PRN_SEARCH_ACQUISITION_TOTAL: i16 = 32; // 32 PRN codes to search
+pub static PRN_SEARCH_ACQUISITION_TOTAL: usize = 32; // 32 PRN codes to search
 static LONG_SAMPLES_LENGTH: i8 = 11; // ms
 
 #[derive(Debug, Clone)]
@@ -57,11 +56,15 @@ impl AcquisitionResult {
 }
 
 pub fn do_acquisition(
-    acq_result: &mut AcquisitionResult,
+    acquisition_result: Arc<Mutex<AcquisitionResult>>,
     freq_sampling: f32,
     freq_IF: f32,
     buffer_location: usize,
+    is_complex: bool,
 ) -> Result<(), Box<dyn Error>> {
+    let mut acq_result = acquisition_result
+        .lock()
+        .expect("Error in locking in do_acquisition");
     let num_ca_code_samples = (freq_sampling
         / (gps_constants::GPS_L1_CA_CODE_RATE_CHIPS_PER_S
             / gps_constants::GPS_L1_CA_CODE_LENGTH_CHIPS))
@@ -139,13 +142,19 @@ pub fn do_acquisition(
         satellite_detection(d_max_2d, test_threhold)
     {
         acq_result.code_phase = code_phase;
-        acq_result.carrier_freq = carrier_freq;
         acq_result.mag_relative = mag_relative;
     } else {
         println!("PRN {} is not present.", prn + 1);
     }
 
-    finer_doppler(&long_samples, false, acq_result, freq_sampling, freq_IF);
+    finer_doppler(
+        &long_samples,
+        is_complex,
+        acquisition_result.clone(),
+        freq_sampling,
+        freq_IF,
+    );
+    dbg!(acquisition_result.lock().unwrap());
     Ok(())
 }
 
@@ -160,10 +169,13 @@ pub fn do_acquisition(
 fn finer_doppler(
     long_samples: &Vec<i16>,
     is_complex: bool,
-    acq_result: &mut AcquisitionResult,
+    acquisition_result: Arc<Mutex<AcquisitionResult>>,
     freq_sampling: f32,
     freq_IF: f32,
 ) -> Option<()> {
+    let mut acq_result = acquisition_result
+        .lock()
+        .expect("Error in locking in finer_dopper");
     long_samples.iter().find(|&x| !((*x as f32).is_nan()))?; // Check whether there is nan in the data
     let mut samples_iq: Vec<Complex32> = long_samples
         .chunks_exact(2)

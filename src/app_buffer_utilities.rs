@@ -33,7 +33,7 @@ impl AppBuffer {
 }
 
 // Global variable for application buffer
-static mut APPBUFF: Lazy<AppBuffer> = Lazy::new(|| AppBuffer::new());
+pub static mut APPBUFF: Lazy<AppBuffer> = Lazy::new(|| AppBuffer::new());
 
 pub async fn callback_read_buffer(buff: Arc<*const c_uchar>, buff_len: c_uint) {
     let data_ptr = Arc::as_ptr(&buff);
@@ -45,7 +45,7 @@ pub async fn callback_read_buffer(buff: Arc<*const c_uchar>, buff_len: c_uint) {
         .expect("Error in locking when incrementing buff_cnt of AppBuffer");
     let added_data = unsafe { APPBUFF.buff_producer.push_slice(data_slice) };
     assert_eq!(added_data, 2 * buff_len as usize);
-    *cnt_val = ((*cnt_val) % APP_BUFFER_NUM) + 1;
+    *cnt_val = (*cnt_val + 1) % APP_BUFFER_NUM;
 }
 
 #[no_mangle]

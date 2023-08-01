@@ -3,7 +3,6 @@
 #![allow(non_snake_case)]
 #![allow(unused_variables)]
 
-use ctrlc;
 use std::ffi::{c_void, CString};
 use std::io::Error;
 use std::mem::size_of;
@@ -14,6 +13,7 @@ use std::{env, u8};
 use tokio::task;
 mod acquisition;
 use acquisition::AcquisitionResult;
+use acquisition::PRN_SEARCH_ACQUISITION_TOTAL;
 mod tracking;
 use tracking::TrackingResult;
 mod decoding;
@@ -23,8 +23,7 @@ use crate::data_process::{do_data_process, ProcessStage};
 mod app_buffer_utilities;
 mod gps_ca_prn;
 mod gps_constants;
-use app_buffer_utilities::AppBuffer;
-mod utilities;
+mod test_utilities;
 
 include!(concat!(env!("OUT_DIR"), "/bindings.rs"));
 
@@ -118,7 +117,7 @@ fn main() -> Result<(), Error> {
     let mut acquisition_results: Vec<Arc<Mutex<AcquisitionResult>>> = Vec::new();
     let mut tracking_results: Vec<Arc<Mutex<TrackingResult>>> = Vec::new();
     let mut stages_all: Vec<Arc<Mutex<ProcessStage>>> = Vec::new();
-    for i in 1..=32 {
+    for i in 1..=PRN_SEARCH_ACQUISITION_TOTAL {
         let acq_result: AcquisitionResult = AcquisitionResult::new(i, sampling_rate);
         acquisition_results.push(Arc::new(Mutex::new(acq_result)));
         let trk_result = TrackingResult::new(i);
@@ -126,8 +125,7 @@ fn main() -> Result<(), Error> {
         stages_all.push(Arc::new(Mutex::new(ProcessStage::SignalAcquisition)));
     }
 
-    let mut app_buff = AppBuffer::new();
-    for i in 0..32 {
+    for i in 0..PRN_SEARCH_ACQUISITION_TOTAL {
         let acq_result_clone = Arc::clone(&acquisition_results[i]);
         let trk_result_clone = Arc::clone(&tracking_results[i]);
         let stage_clone = Arc::clone(&stages_all[i]);
