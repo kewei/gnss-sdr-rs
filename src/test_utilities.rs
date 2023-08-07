@@ -9,7 +9,7 @@ use std::sync::Arc;
 use std::{thread, time};
 
 use crate::app_buffer_utilities;
-use app_buffer_utilities::{APPBUFF, APP_BUFFER_NUM};
+use app_buffer_utilities::{APPBUFF, APP_BUFFER_NUM, BUFFER_SIZE};
 
 const EPSILON: f64 = 1e-8;
 const MAX_ITER: usize = 100;
@@ -84,22 +84,45 @@ pub fn plot_samples(samples: &[f32]) {
 pub fn read_data_file(f_name: &str) -> Result<()> {
     let f = File::open(f_name)?;
     let mut buff_read = BufReader::new(f);
+    let values1 = [0i32; app_buffer_utilities::BUFFER_SIZE];
+    let mut values2 = [0; app_buffer_utilities::BUFFER_SIZE];
     loop {
-        let mut values = [0; 2 * app_buffer_utilities::BUFFER_SIZE];
-        buff_read.read_exact(&mut values[..])?;
-        if values.len() != 2 * app_buffer_utilities::BUFFER_SIZE {
+        let mut values: Vec<u8> = Vec::with_capacity(2 * app_buffer_utilities::BUFFER_SIZE);
+        buff_read.read_exact(&mut values2[..])?;
+        if values2.len() != app_buffer_utilities::BUFFER_SIZE {
             break;
         }
-        let added_data = unsafe { APPBUFF.buff_producer.push_slice(&values) };
-        let cnt_clone = unsafe { Arc::clone(&(APPBUFF.buff_cnt)) };
-        let mut cnt_val = cnt_clone
+        let t_v: Vec<(i32, i32)> = values1
+            .into_iter()
+            .zip(values2.into_iter().map(|x| x as i32))
+            .collect();
+
+        values = self_flatten(&t_v).iter().map(|&x| x as u8).collect();
+
+        let app_buffer_clone = unsafe { Arc::clone(&APPBUFF) };
+        let mut app_buffer_val = app_buffer_clone
             .write()
             .expect("Error in locking when incrementing buff_cnt of AppBuffer");
-        *cnt_val = (*cnt_val + 1) % APP_BUFFER_NUM;
 
-        let ten_ms = time::Duration::from_millis(10);
-        thread::sleep(ten_ms);
+        // Copy data
+        let cnt = app_buffer_val.buff_cnt;
+        app_buffer_val
+            .app_buffer
+            .write_latest(&values, (cnt * 2 * BUFFER_SIZE) as isize);
+
+        app_buffer_val.buff_cnt = (app_buffer_val.buff_cnt + 1) % APP_BUFFER_NUM;
+
+        let five_ms = time::Duration::from_millis(5);
+        thread::sleep(five_ms);
     }
 
     Ok(())
+}
+
+#[no_mangle]
+#[inline(never)]
+fn self_flatten(data: &[(i32, i32)]) -> &[i32] {
+    use std::mem::transmute;
+    use std::slice::from_raw_parts;
+    unsafe { transmute(from_raw_parts(data.as_ptr(), data.len() * 2)) }
 }

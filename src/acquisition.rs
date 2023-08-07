@@ -10,7 +10,7 @@ use std::f32::consts::PI;
 use std::fmt;
 use std::sync::{Arc, Mutex};
 
-use crate::app_buffer_utilities::get_current_buffer;
+use crate::app_buffer_utilities::{get_current_buffer, APPBUFF, BUFFER_SIZE};
 use crate::gps_ca_prn::generate_ca_code;
 use crate::gps_constants;
 
@@ -59,9 +59,8 @@ pub fn do_acquisition(
     acquisition_result: Arc<Mutex<AcquisitionResult>>,
     freq_sampling: f32,
     freq_IF: f32,
-    buffer_location: usize,
     is_complex: bool,
-) -> Result<(), Box<dyn Error>> {
+) -> Result<usize, &'static str> {
     let mut acq_result = acquisition_result
         .lock()
         .expect("Error in locking in do_acquisition");
@@ -71,8 +70,13 @@ pub fn do_acquisition(
         .round() as usize;
     let fft_length = num_ca_code_samples; // One CA code length
 
-    let n_samples: usize = (2.0 * LONG_SAMPLES_LENGTH as f32 * freq_sampling) as usize;
-    let long_samples = get_current_buffer(buffer_location, n_samples);
+    let app_buff_clone = unsafe { Arc::clone(&APPBUFF) };
+    let mut app_buff_value = app_buff_clone
+        .read()
+        .expect("Error in reading buff_cnt in acquisition");
+    let n_samples: usize = LONG_SAMPLES_LENGTH as usize * num_ca_code_samples;
+    let mut buffer_location = app_buff_value.buff_cnt * BUFFER_SIZE - n_samples;
+    let long_samples = get_current_buffer(buffer_location, 2 * n_samples);
 
     let samples_iq: Vec<Complex32> = long_samples[..2 * num_ca_code_samples]
         .chunks_exact(2)
@@ -103,9 +107,16 @@ pub fn do_acquisition(
 
     let mut ca_code_fft = r_fft.make_output_vec();
     let prn = acq_result.prn;
-    let mut ca_code_input: Vec<f32> = acq_result.ca_code.iter().map(|x| *x as f32).collect();
+    let mut ca_code_input: Vec<f32> = acq_result
+        .ca_code_samples
+        .iter()
+        .map(|x| *x as f32)
+        .collect();
     assert_eq!(ca_code_input.len(), fft_length);
-    r_fft.process(&mut ca_code_input, &mut ca_code_fft)?;
+    if let Ok(()) = r_fft.process(&mut ca_code_input, &mut ca_code_fft) {
+    } else {
+        return Err("Error in RealFftPlanner");
+    };
 
     // realfft does not calculate all fft results, so need to get the rest part
     let mut second_part = vec![Complex32::new(0.0, 0.0); ca_code_fft.len() - 2];
@@ -144,18 +155,22 @@ pub fn do_acquisition(
         acq_result.code_phase = code_phase;
         acq_result.mag_relative = mag_relative;
     } else {
-        println!("PRN {} is not present.", prn + 1);
+        return Err("Satellite acquisition failed!");
     }
 
-    finer_doppler(
+    if let Some(()) = finer_doppler(
         &long_samples,
         is_complex,
-        acquisition_result.clone(),
+        &mut *acq_result,
         freq_sampling,
         freq_IF,
-    );
-    dbg!(acquisition_result.lock().unwrap());
-    Ok(())
+    ) {
+    } else {
+        return Err("Error in finding finer doppler frequency.");
+    };
+
+    buffer_location += acq_result.code_phase;
+    Ok(buffer_location)
 }
 
 /// Find more accurate doppler frequency
@@ -169,14 +184,12 @@ pub fn do_acquisition(
 fn finer_doppler(
     long_samples: &Vec<i16>,
     is_complex: bool,
-    acquisition_result: Arc<Mutex<AcquisitionResult>>,
+    acq_result: &mut AcquisitionResult,
     freq_sampling: f32,
     freq_IF: f32,
 ) -> Option<()> {
-    let mut acq_result = acquisition_result
-        .lock()
-        .expect("Error in locking in finer_dopper");
     long_samples.iter().find(|&x| !((*x as f32).is_nan()))?; // Check whether there is nan in the data
+
     let mut samples_iq: Vec<Complex32> = long_samples
         .chunks_exact(2)
         .map(|chunk| {

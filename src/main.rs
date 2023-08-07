@@ -27,7 +27,8 @@ mod test_utilities;
 
 include!(concat!(env!("OUT_DIR"), "/bindings.rs"));
 
-fn main() -> Result<(), Error> {
+#[tokio::main]
+async fn main() -> Result<(), Error> {
     let mut dev_name = String::from("00000001");
     dev_name.retain(|c| c.to_digit(32).unwrap() <= 9);
     let dev_name = CString::new(dev_name).expect("CString::new failed.");
@@ -130,19 +131,17 @@ fn main() -> Result<(), Error> {
         let trk_result_clone = Arc::clone(&tracking_results[i]);
         let stage_clone = Arc::clone(&stages_all[i]);
         let stop_signal_clone = Arc::clone(&term);
-        task::spawn(async move {
-            do_data_process(
-                sampling_rate,
-                freq_IF,
-                stage_clone,
-                acq_result_clone,
-                trk_result_clone,
-                signal_complex,
-                0,
-                stop_signal_clone,
-            )
-            .await;
-        });
+        /* task::spawn(do_data_process(
+            sampling_rate,
+            freq_IF,
+            stage_clone,
+            acq_result_clone,
+            trk_result_clone,
+            signal_complex,
+            stop_signal_clone,
+        ))
+        .await
+        .unwrap(); */
     }
 
     unsafe {

@@ -6,7 +6,7 @@ use std::f32::consts::PI;
 use std::sync::{Arc, Mutex};
 
 use crate::acquisition::AcquisitionResult;
-use crate::app_buffer_utilities::get_current_buffer;
+use crate::app_buffer_utilities::{get_current_buffer, APPBUFF, BUFFER_SIZE};
 use crate::gps_ca_prn::generate_ca_code;
 use crate::gps_constants;
 
@@ -78,6 +78,7 @@ pub fn do_track(
         .lock()
         .expect("Error in locking in tracking");
     let prn = acq_result.prn;
+    assert_eq!(prn, trk_result.prn);
     let code_freq: f32 = trk_result.code_freq;
     let code_phase_step: f32 = code_freq / f_sampling;
     let num_ca_code_samples =
@@ -172,7 +173,10 @@ pub fn do_track(
     trk_result.code_freq = code_freq;
     trk_result.ca_code_prompt = ca_code_prompt;
 
-    dbg!(&tracking_result);
+    println!(
+        "prn: {}, i_prompt: {}, q_prompt: {}, i_early: {}, q_early: {},  i_late: {}, q_late: {}",
+        prn, i_prompt, q_prompt, i_early, q_early, i_late, q_late
+    );
 
     Ok(())
 }

@@ -1,8 +1,9 @@
 use async_ffi::async_ffi;
+use itertools::Itertools;
 use libc::c_void;
 use once_cell::sync::Lazy;
 use rayon::iter::plumbing::Producer;
-use ringbuf::{HeapConsumer, HeapProducer, HeapRb};
+use slice_ring_buf::{SliceRB, SliceRbRef};
 use std::ffi::{c_uchar, c_uint};
 use std::mem::size_of;
 use std::slice;
@@ -14,38 +15,41 @@ pub const BUFFER_SIZE: usize = 16384;
 pub const APP_BUFFER_NUM: usize = 6000;
 
 pub struct AppBuffer {
-    pub buff_cnt: Arc<RwLock<usize>>,
-    pub buff_producer: HeapProducer<u8>,
-    pub buff_consumer: HeapConsumer<u8>,
+    pub buff_cnt: usize,
+    pub app_buffer: SliceRB<u8>,
 }
 
 impl AppBuffer {
     pub fn new() -> Self {
-        let ring_buff = HeapRb::<u8>::try_new(APP_BUFFER_NUM * BUFFER_SIZE * 2 * size_of::<u8>())
-            .expect("Error occurs while creating AppBuffer");
-        let (mut producer, mut consumer) = ring_buff.split();
         Self {
-            buff_cnt: Arc::new(RwLock::new(0)),
-            buff_producer: producer,
-            buff_consumer: consumer,
+            buff_cnt: 0,
+            app_buffer: SliceRB::<u8>::from_len(APP_BUFFER_NUM * 2 * BUFFER_SIZE),
         }
     }
 }
 
 // Global variable for application buffer
-pub static mut APPBUFF: Lazy<AppBuffer> = Lazy::new(|| AppBuffer::new());
+pub static mut APPBUFF: Lazy<Arc<RwLock<AppBuffer>>> =
+    Lazy::new(|| Arc::new(RwLock::new(AppBuffer::new())));
 
 pub async fn callback_read_buffer(buff: Arc<*const c_uchar>, buff_len: c_uint) {
+    let app_buffer_clone = unsafe { Arc::clone(&APPBUFF) };
+    let mut app_buffer_clone_val = app_buffer_clone
+        .write()
+        .expect("Error in locking when writing to AppBuffer");
+
+    // Copy data
     let data_ptr = Arc::as_ptr(&buff);
     let _data = unsafe { *data_ptr };
-    let data_slice: &[u8] = unsafe { slice::from_raw_parts(_data, 2 * buff_len as usize) };
-    let cnt_clone = unsafe { Arc::clone(&(APPBUFF.buff_cnt)) };
-    let mut cnt_val = cnt_clone
-        .write()
-        .expect("Error in locking when incrementing buff_cnt of AppBuffer");
-    let added_data = unsafe { APPBUFF.buff_producer.push_slice(data_slice) };
-    assert_eq!(added_data, 2 * buff_len as usize);
-    *cnt_val = (*cnt_val + 1) % APP_BUFFER_NUM;
+    let data_slice: &[u8] = unsafe { slice::from_raw_parts(_data, 2 * BUFFER_SIZE) };
+
+    let cnt = app_buffer_clone_val.buff_cnt;
+    app_buffer_clone_val
+        .app_buffer
+        .write_latest(data_slice, (cnt * 2 * BUFFER_SIZE) as isize);
+
+    // Increment buff_cnt
+    app_buffer_clone_val.buff_cnt = (app_buffer_clone_val.buff_cnt + 1) % APP_BUFFER_NUM;
 }
 
 #[no_mangle]
@@ -55,10 +59,19 @@ pub async extern "C" fn c_callback_read_buffer(buff: *const c_uchar, buff_len: c
     callback_read_buffer(data_ptr, buff_len).await;
 }
 
+/// Reading samples from the circular buffer
+///
 pub fn get_current_buffer(buffer_location: usize, n_samples: usize) -> Vec<i16> {
-    let cnt_clone = unsafe { Arc::clone(&(APPBUFF.buff_cnt)) };
-    let cnt_val = cnt_clone
+    let buffer_clone = unsafe { Arc::clone(&APPBUFF) };
+    let buffer_val = buffer_clone
         .read()
-        .expect("Error in locking when reading buff_cnt of AppBuffer");
-    todo!();
+        .expect("Error happens when reading data from AppBuffer");
+
+    let mut out_data = vec![0; n_samples];
+    let buf_loc = 2 * buffer_location % (APP_BUFFER_NUM * 2 * BUFFER_SIZE);
+    buffer_val
+        .app_buffer
+        .read_into(&mut out_data, buf_loc as isize);
+
+    out_data.iter().map(|&x| x as i16).collect::<Vec<i16>>()
 }

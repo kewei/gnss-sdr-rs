@@ -383,9 +383,9 @@ dependencies = [
  "quantiles",
  "rayon",
  "realfft",
- "ringbuf",
  "rustfft",
  "signal-hook",
+ "slice_ring_buf",
  "spectrum-analyzer",
  "tokio",
 ]
@@ -840,15 +840,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a5996294f19bd3aae0453a862ad728f60e6600695733dd5df01da90c54363a3c"
 
 [[package]]
-name = "ringbuf"
-version = "0.3.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "79abed428d1fd2a128201cec72c5f6938e2da607c6f3745f769fabea399d950a"
-dependencies = [
- "crossbeam-utils",
-]
-
-[[package]]
 name = "russell_chk"
 version = "0.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -987,6 +978,12 @@ checksum = "d8229b473baa5980ac72ef434c4415e70c4b5e71b423043adb4ba059f89c99a1"
 dependencies = [
  "libc",
 ]
+
+[[package]]
+name = "slice_ring_buf"
+version = "0.2.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b8c4361c250fd000889a89f4ca721808588f0eaeb3b1d6efd7201a21ae8ee469"
 
 [[package]]
 name = "smallvec"
