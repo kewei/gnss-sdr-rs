@@ -44,28 +44,6 @@ pub fn do_data_process(
                     let acq_result = acq_result_clone2
                         .lock()
                         .expect("Error in locking after acquisition");
-                    let trk_result_clone = tracking_result_thread.clone();
-                    let mut trk_result = trk_result_clone
-                        .lock()
-                        .expect("Error in locking TrackingResult in acquisition");
-                    trk_result.carrier_freq = acq_result.carrier_freq;
-
-                    let mut ca_code = acq_result.ca_code.clone();
-                    ca_code.insert(
-                        0,
-                        ca_code[gps_constants::GPS_L1_CA_CODE_LENGTH_CHIPS as usize - 1],
-                    );
-                    ca_code.push(ca_code[1]);
-
-                    let code_phase_step: f32 =
-                        gps_constants::GPS_L1_CA_CODE_RATE_CHIPS_PER_S / freq_sampling;
-                    let num_ca_code_samples = (gps_constants::GPS_L1_CA_CODE_LENGTH_CHIPS
-                        / code_phase_step)
-                        .ceil() as usize;
-                    let ca_code_prompt: Vec<f32> = (0..num_ca_code_samples)
-                        .map(|x| ca_code[(x as f32 * code_phase_step).ceil() as usize] as f32)
-                        .collect();
-                    trk_result.ca_code_prompt = ca_code_prompt;
 
                     println!(
                         "prn: {} freq: {} code_phase: {}",
@@ -108,9 +86,8 @@ pub fn do_data_process(
                     app_buff_value.buff_cnt * BUFFER_SIZE - num_ca_code_samples;
 
                 if buffer_location_curr > buffer_location {
-                    let acq_result_clone = acquisition_result_thread.clone();
-                    if let Ok(()) = do_track(
-                        acq_result_clone,
+                    if let Ok(buffer_loc) = do_track(
+                        acquisition_result_thread.clone(),
                         tracking_result_thread.clone(),
                         freq_sampling,
                         freq_IF,
@@ -120,10 +97,11 @@ pub fn do_data_process(
                         let trk_result = trk_result_clone
                             .lock()
                             .expect("Error in locking 'TrackingResult' thread");
-                        *stage = ProcessStage::SignalTracking;
+                        buffer_location = buffer_loc;
                     } else {
-                        todo!(); // do tracking again with new data
+                        println!("Tracking failed.");
                     };
+                    *stage = ProcessStage::SignalTracking;
                 } else {
                     //sleep(Duration::from_millis(1)).await;
                     thread::sleep(Duration::from_millis(1));

@@ -4,7 +4,7 @@ use spectrum_analyzer::scaling::divide_by_N_sqrt;
 use spectrum_analyzer::windows::hann_window;
 use spectrum_analyzer::{samples_fft_to_spectrum, FrequencyLimit};
 use std::fs::File;
-use std::io::{BufReader, Read, Result};
+use std::io::{BufRead, BufReader, Read, Result};
 use std::sync::Arc;
 use std::{thread, time};
 
@@ -84,17 +84,22 @@ pub fn plot_samples(samples: &[f32]) {
 pub fn read_data_file(f_name: &str) -> Result<()> {
     let f = File::open(f_name)?;
     let mut buff_read = BufReader::new(f);
-    let values1 = [0i32; app_buffer_utilities::BUFFER_SIZE];
-    let mut values2 = [0; app_buffer_utilities::BUFFER_SIZE];
+    let values1 = [0i32; BUFFER_SIZE];
+    let mut values2 = [0; BUFFER_SIZE];
     loop {
-        let mut values: Vec<u8> = Vec::with_capacity(2 * app_buffer_utilities::BUFFER_SIZE);
-        buff_read.read_exact(&mut values2[..])?;
-        if values2.len() != app_buffer_utilities::BUFFER_SIZE {
-            break;
+        let mut values: Vec<u8> = Vec::with_capacity(2 * BUFFER_SIZE);
+        if !(buff_read
+            .fill_buf()
+            .expect("Filling buffer has an error!")
+            .is_empty())
+        {
+            buff_read.read_exact(&mut values2[..])?;
         }
-        let t_v: Vec<(i32, i32)> = values1
+
+        let t_v: Vec<(i32, i32)> = values2
             .into_iter()
-            .zip(values2.into_iter().map(|x| x as i32))
+            .map(|x| x as i32)
+            .zip(values1.into_iter())
             .collect();
 
         values = self_flatten(&t_v).iter().map(|&x| x as u8).collect();
@@ -105,12 +110,12 @@ pub fn read_data_file(f_name: &str) -> Result<()> {
             .expect("Error in locking when incrementing buff_cnt of AppBuffer");
 
         // Copy data
-        let cnt = app_buffer_val.buff_cnt;
+        let cnt = app_buffer_val.buff_cnt % APP_BUFFER_NUM;
         app_buffer_val
             .app_buffer
             .write_latest(&values, (cnt * 2 * BUFFER_SIZE) as isize);
 
-        app_buffer_val.buff_cnt = (app_buffer_val.buff_cnt + 1) % APP_BUFFER_NUM;
+        app_buffer_val.buff_cnt += 1;
 
         let five_ms = time::Duration::from_millis(5);
         thread::sleep(five_ms);

@@ -71,7 +71,7 @@ pub fn do_acquisition(
     let fft_length = num_ca_code_samples; // One CA code length
 
     let app_buff_clone = unsafe { Arc::clone(&APPBUFF) };
-    let mut app_buff_value = app_buff_clone
+    let app_buff_value = app_buff_clone
         .read()
         .expect("Error in reading buff_cnt in acquisition");
     let n_samples: usize = LONG_SAMPLES_LENGTH as usize * num_ca_code_samples;
@@ -99,10 +99,6 @@ pub fn do_acquisition(
     let inv_fft = inv_planner.plan_fft_inverse(fft_length);
 
     let steps: i32 = 2 * FREQ_SEARCH_ACQUISITION_HZ as i32 / FREQ_SEARCH_STEP_HZ + 1;
-    // For this, the sampling frequency must be multiple of CA code rate, need to improved later todo!()
-    let samples_per_chip =
-        (freq_sampling / gps_constants::GPS_L1_CA_CODE_RATE_CHIPS_PER_S) as usize;
-
     let test_threhold = (2.0 * invgammp(0.8, 2.0)) as f32;
 
     let mut ca_code_fft = r_fft.make_output_vec();
@@ -161,7 +157,7 @@ pub fn do_acquisition(
     if let Some(()) = finer_doppler(
         &long_samples,
         is_complex,
-        &mut *acq_result,
+        &mut acq_result,
         freq_sampling,
         freq_IF,
     ) {
@@ -264,7 +260,7 @@ fn finer_doppler(
         acq_result.carrier_freq = -fft_freq_bin_new[idx];
     } else {
         acq_result.carrier_freq =
-            ((-1i8).pow((if is_complex { 1 } else { 0 }))) as f32 * fft_freq_bins[idx];
+            ((-1i8).pow(if is_complex { 1 } else { 0 })) as f32 * fft_freq_bins[idx];
     }
 
     Some(())

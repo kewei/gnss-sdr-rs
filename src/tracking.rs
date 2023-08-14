@@ -38,7 +38,6 @@ pub struct TrackingResult {
     pub carrier_error_filtered: f32,
     pub carrier_phase_error: f32,
     pub carrier_freq: f32,
-    pub ca_code_prompt: Vec<f32>,
 }
 
 impl TrackingResult {
@@ -59,7 +58,6 @@ impl TrackingResult {
             carrier_error_filtered: 0.0,
             carrier_phase_error: 0.0,
             carrier_freq: 0.0,
-            ca_code_prompt: Vec::new(),
         }
     }
 }
@@ -70,7 +68,7 @@ pub fn do_track(
     f_sampling: f32,
     f_IF: f32,
     buffer_location: usize,
-) -> Result<(), Box<dyn Error>> {
+) -> Result<usize, Box<dyn Error>> {
     let mut acq_result = acquisition_result
         .lock()
         .expect("Error in locking in tracking");
@@ -79,12 +77,27 @@ pub fn do_track(
         .expect("Error in locking in tracking");
     let prn = acq_result.prn;
     assert_eq!(prn, trk_result.prn);
-    let code_freq: f32 = trk_result.code_freq;
-    let code_phase_step: f32 = code_freq / f_sampling;
-    let num_ca_code_samples =
-        (gps_constants::GPS_L1_CA_CODE_LENGTH_CHIPS / code_phase_step).ceil() as usize;
 
-    let signal_input = get_current_buffer(buffer_location, num_ca_code_samples);
+    let code_freq: f32 = trk_result.code_freq;
+    let code_phase_error: f32 = trk_result.code_phase_error;
+    let code_nco: f32 = trk_result.code_error_filtered;
+    let code_error: f32 = trk_result.code_error;
+
+    let carrier_freq = if trk_result.carrier_freq == 0.0 {
+        acq_result.carrier_freq
+    } else {
+        trk_result.carrier_freq
+    };
+    let carrier_phase_error: f32 = trk_result.carrier_phase_error;
+    let carrier_nco: f32 = trk_result.carrier_error_filtered;
+    let carrier_error: f32 = trk_result.carrier_error;
+
+    let code_phase_step: f32 = code_freq / f_sampling;
+    let num_ca_code_samples = ((gps_constants::GPS_L1_CA_CODE_LENGTH_CHIPS - code_phase_error)
+        / code_phase_step)
+        .ceil() as usize;
+
+    let signal_input = get_current_buffer(buffer_location, 2 * num_ca_code_samples);
     let samples_iq: Vec<Complex32> = signal_input
         .chunks_exact(2)
         .map(|chunk| {
@@ -94,16 +107,7 @@ pub fn do_track(
                 panic!("Problem with converting input samples to complex values.");
             }
         })
-        .collect(); // Duplicated
-
-    let code_phase_error: f32 = trk_result.code_phase_error;
-    let code_nco: f32 = trk_result.code_error_filtered;
-    let code_error: f32 = trk_result.code_error;
-
-    let carrier_freq: f32 = trk_result.carrier_freq;
-    let carrier_phase_error: f32 = trk_result.carrier_phase_error;
-    let carrier_nco: f32 = trk_result.carrier_error_filtered;
-    let carrier_error: f32 = trk_result.carrier_error;
+        .collect();
 
     let mut ca_code = acq_result.ca_code.clone();
     ca_code.insert(
@@ -112,30 +116,25 @@ pub fn do_track(
     );
     ca_code.push(ca_code[1]);
 
-    let ca_code_prompt: Vec<f32> = trk_result.ca_code_prompt.to_vec();
+    let ca_code_prompt: Vec<f32> = (0..num_ca_code_samples)
+        .map(|x| ca_code[(x as f32 * code_phase_step + code_phase_error).ceil() as usize] as f32)
+        .collect();
 
-    let code_phase_step: f32 = code_freq / f_sampling;
-    let num_ca_code_samples = ((gps_constants::GPS_L1_CA_CODE_LENGTH_CHIPS - code_phase_error)
-        / code_phase_step)
-        .ceil() as usize;
-
-    let (q_prompt, i_prompt, carrier_error, carrier_nco, carrier_phase_error, q_arm, i_arm) =
-        costas_loop(
-            &samples_iq,
-            ca_code_prompt,
-            num_ca_code_samples,
-            carrier_freq,
-            carrier_error,
-            carrier_phase_error,
-            carrier_nco,
-            f_sampling,
-        );
+    let (carrier_error, carrier_nco, carrier_phase_error, q_arm, i_arm) = costas_loop(
+        &samples_iq,
+        ca_code_prompt,
+        num_ca_code_samples,
+        carrier_freq,
+        carrier_error,
+        carrier_phase_error,
+        carrier_nco,
+        f_sampling,
+    );
 
     // Update carrier frequency
     let carrier_freq = acq_result.carrier_freq + carrier_nco;
 
     let (
-        ca_code_prompt,
         code_freq,
         d_code_error,
         code_nco,
@@ -149,7 +148,7 @@ pub fn do_track(
     ) = dll_early_late(
         q_arm,
         i_arm,
-        code_freq,
+        code_phase_step,
         code_phase_error,
         code_error,
         code_nco,
@@ -171,18 +170,20 @@ pub fn do_track(
     trk_result.carrier_phase_error = carrier_phase_error;
     trk_result.carrier_freq = carrier_freq;
     trk_result.code_freq = code_freq;
-    trk_result.ca_code_prompt = ca_code_prompt;
 
     println!(
-        "prn: {}, i_prompt: {}, q_prompt: {}, i_early: {}, q_early: {},  i_late: {}, q_late: {}",
-        prn, i_prompt, q_prompt, i_early, q_early, i_late, q_late
+        "prn: {}, i_prompt: {}, q_prompt: {}, i_early: {}, q_early: {},  i_late: {}, q_late: {}, carrier_freq: {}",
+        prn, i_prompt, q_prompt, i_early, q_early, i_late, q_late, carrier_freq
     );
 
-    Ok(())
+    let buffer_loc = buffer_location + num_ca_code_samples;
+    println!("buffer location: {}", buffer_loc);
+
+    Ok(buffer_loc)
 }
 
 fn costas_loop(
-    signal_samples: &Vec<Complex32>,
+    signal_samples: &[Complex32],
     prompt_code_samples: Vec<f32>,
     num_ca_code_samples: usize,
     freq: f32,
@@ -190,7 +191,7 @@ fn costas_loop(
     carrier_phase_error: f32,
     carrier_nco: f32,
     f_sampling: f32,
-) -> (f32, f32, f32, f32, f32, Vec<f32>, Vec<f32>) {
+) -> (f32, f32, f32, Vec<f32>, Vec<f32>) {
     let local_carrier: Vec<Complex32> = (0..num_ca_code_samples)
         .map(|x| {
             Complex32::new(
@@ -223,8 +224,6 @@ fn costas_loop(
         + d_carrier_error * (PLL_SUM_CARR / tau1_carr);
 
     (
-        q_prompt,
-        i_prompt,
         d_carrier_error,
         carrier_nco,
         carrier_phase_error,
@@ -236,15 +235,14 @@ fn costas_loop(
 fn dll_early_late(
     q_arm: Vec<f32>,
     i_arm: Vec<f32>,
-    code_freq: f32,
+    code_phase_step: f32,
     code_phase_error: f32,
     old_code_error: f32,
     code_nco: f32,
     ca_code: Vec<i16>,
     num_ca_code_samples: usize,
     f_sampling: f32,
-) -> (Vec<f32>, f32, f32, f32, f32, f32, f32, f32, f32, f32, f32) {
-    let code_phase_step: f32 = code_freq / f_sampling;
+) -> (f32, f32, f32, f32, f32, f32, f32, f32, f32, f32) {
     let (ca_code_early, ca_code_late, ca_code_prompt): (Vec<f32>, Vec<f32>, Vec<f32>) =
         izip!(0..num_ca_code_samples)
             .map(|x| {
@@ -303,8 +301,8 @@ fn dll_early_late(
         + (tau2_code / tau1_code) * (d_code_error - old_code_error)
         + d_code_error * (DLL_SUM_CODE / tau1_code);
     let code_freq: f32 = gps_constants::GPS_L1_CA_CODE_RATE_CHIPS_PER_S - code_nco;
+
     (
-        ca_code_prompt,
         code_freq,
         d_code_error,
         code_nco,
