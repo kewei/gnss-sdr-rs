@@ -9,8 +9,9 @@ use std::mem::size_of;
 use std::ptr;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
+use std::thread;
+use std::time::Duration;
 use std::{env, u8};
-use tokio::task;
 mod acquisition;
 use acquisition::AcquisitionResult;
 use acquisition::PRN_SEARCH_ACQUISITION_TOTAL;
@@ -52,17 +53,6 @@ async fn main() -> Result<(), Error> {
     let freq_IF: f32 = 0.0;
     let mut gain = 0;
     let ppm_error = 0;
-    //const default_buf_len: usize = 262144;
-    const default_buf_len: usize = 4096 * 4;
-    #[allow(unused_variables)]
-    let min_buf_len = 256;
-    #[allow(unused_variables)]
-    let max_buf_len = 4194304;
-    const buff_len: usize = default_buf_len * size_of::<u8>();
-    let mut buf_vec = [0u8; buff_len];
-    let buf: *mut [u8] = &mut buf_vec;
-    let mut n_read = 0;
-    let mut bytes_read: u32 = 0; // 0 means infinite
     let mut dev = ptr::null_mut();
 
     unsafe {
@@ -126,22 +116,32 @@ async fn main() -> Result<(), Error> {
         stages_all.push(Arc::new(Mutex::new(ProcessStage::SignalAcquisition)));
     }
 
+    let mut handlers = Vec::new();
     for i in 0..PRN_SEARCH_ACQUISITION_TOTAL {
         let acq_result_clone = Arc::clone(&acquisition_results[i]);
         let trk_result_clone = Arc::clone(&tracking_results[i]);
         let stage_clone = Arc::clone(&stages_all[i]);
         let stop_signal_clone = Arc::clone(&term);
-        /* task::spawn(do_data_process(
-            sampling_rate,
-            freq_IF,
-            stage_clone,
-            acq_result_clone,
-            trk_result_clone,
-            signal_complex,
-            stop_signal_clone,
-        ))
-        .await
-        .unwrap(); */
+        handlers.push(
+            thread::Builder::new()
+                .name(format!("{i}").to_string())
+                .spawn(move || {
+                    do_data_process(
+                        sampling_rate,
+                        freq_IF,
+                        stage_clone,
+                        acq_result_clone,
+                        trk_result_clone,
+                        false,
+                        stop_signal_clone,
+                    );
+                    thread::sleep(Duration::from_millis(100));
+                }),
+        );
+    }
+
+    for handle in handlers {
+        handle.unwrap().join().unwrap();
     }
 
     unsafe {

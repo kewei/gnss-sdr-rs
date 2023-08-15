@@ -160,7 +160,7 @@ mod test {
         }
 
         let mut handlers = Vec::new();
-        for i in [2, 13] {
+        for i in 0..PRN_SEARCH_ACQUISITION_TOTAL {
             let acq_result_clone = Arc::clone(&acquisition_results[i]);
             let trk_result_clone = Arc::clone(&tracking_results[i]);
             let stage_clone = Arc::clone(&stages_all[i]);
