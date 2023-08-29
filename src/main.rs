@@ -3,7 +3,7 @@
 #![allow(non_snake_case)]
 #![allow(unused_variables)]
 
-use std::ffi::{c_void, CString};
+use std::ffi::{c_uchar, c_uint, c_void, CString};
 use std::io::Error;
 use std::mem::size_of;
 use std::ptr;
@@ -27,6 +27,11 @@ mod gps_constants;
 mod test_utilities;
 
 include!(concat!(env!("OUT_DIR"), "/bindings.rs"));
+
+// C wrapper function to call the Rust callback
+extern "C" {
+    fn rust_callback_wrapper(buff: *mut c_uchar, buff_len: c_uint, ctx: *mut c_void);
+}
 
 #[tokio::main]
 async fn main() -> Result<(), Error> {
@@ -84,18 +89,21 @@ async fn main() -> Result<(), Error> {
 
     // Ctrl-C interruption
     let term = Arc::new(AtomicBool::new(true));
-    let r = term.clone();
+    let term_r = term.clone();
 
     ctrlc::set_handler(move || {
-        r.store(false, Ordering::SeqCst);
+        term_r.store(false, Ordering::SeqCst);
     })
     .expect("Error setting Ctrl-C handler");
 
     // Start RTL_SDR
-    let r: i32;
+    let mut r: i32 = 0;
     unsafe {
-        r = rtl_sdr_read_async_wrapper(
+        let mut ctx = ptr::null_mut();
+        r = rtlsdr_read_async(
             dev,
+            Some(rust_callback_wrapper),
+            ctx,
             app_buffer_utilities::RTL_BUFF_NUM as u32,
             app_buffer_utilities::BUFFER_SIZE as u32,
         );

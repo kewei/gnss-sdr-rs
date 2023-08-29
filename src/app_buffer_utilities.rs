@@ -32,7 +32,8 @@ impl AppBuffer {
 pub static mut APPBUFF: Lazy<Arc<RwLock<AppBuffer>>> =
     Lazy::new(|| Arc::new(RwLock::new(AppBuffer::new())));
 
-pub async fn callback_read_buffer(buff: Arc<*const c_uchar>, buff_len: c_uint) {
+#[no_mangle]
+pub extern "C" fn callback_read_buffer(buff: Arc<*const c_uchar>, buff_len: c_uint) {
     let app_buffer_clone = unsafe { Arc::clone(&APPBUFF) };
     let mut app_buffer_clone_val = app_buffer_clone
         .write()
@@ -50,13 +51,13 @@ pub async fn callback_read_buffer(buff: Arc<*const c_uchar>, buff_len: c_uint) {
 
     // Increment buff_cnt
     app_buffer_clone_val.buff_cnt = (app_buffer_clone_val.buff_cnt + 1) % APP_BUFFER_NUM;
+    println!("buff_cnt: {}", app_buffer_clone_val.buff_cnt);
 }
 
 #[no_mangle]
-#[async_ffi(?Send)]
-pub async extern "C" fn c_callback_read_buffer(buff: *const c_uchar, buff_len: c_uint) {
+pub extern "C" fn rust_callback_wrapper(buff: *const c_uchar, buff_len: c_uint, ctx: *mut c_void) {
     let data_ptr = Arc::new(buff);
-    callback_read_buffer(data_ptr, buff_len).await;
+    callback_read_buffer(data_ptr, buff_len);
 }
 
 /// Reading samples from the circular buffer
