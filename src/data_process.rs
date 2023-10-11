@@ -7,8 +7,7 @@ use crate::tracking::{do_track, TrackingResult};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 use std::thread;
-use tokio::time::{self, Duration};
-use tokio::{task, time::sleep};
+use tokio::time::Duration;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum ProcessStage {
@@ -27,7 +26,7 @@ pub fn do_data_process(
     term_signal: Arc<AtomicBool>,
 ) {
     let mut buffer_location = 0;
-    while !term_signal.load(Ordering::SeqCst) {
+    while term_signal.load(Ordering::SeqCst) {
         let stage_thread_clone = Arc::clone(&stage_thread);
         let mut stage = stage_thread_clone
             .lock()

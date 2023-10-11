@@ -5,13 +5,13 @@
 
 use std::ffi::{c_uchar, c_uint, c_void, CString};
 use std::io::Error;
-use std::mem::size_of;
 use std::ptr;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
-use std::thread;
-use std::time::Duration;
 use std::{env, u8};
+use std::{thread, time};
+use tokio::task;
+use tokio::time::Duration;
 mod acquisition;
 use acquisition::AcquisitionResult;
 use acquisition::PRN_SEARCH_ACQUISITION_TOTAL;
@@ -24,7 +24,9 @@ use crate::data_process::{do_data_process, ProcessStage};
 mod app_buffer_utilities;
 mod gps_ca_prn;
 mod gps_constants;
+mod rtlsdr_wrapper;
 mod test_utilities;
+use rtlsdr_wrapper::rtlsdr_dev_wrapper;
 
 include!(concat!(env!("OUT_DIR"), "/bindings.rs"));
 
@@ -35,57 +37,16 @@ extern "C" {
 
 #[tokio::main]
 async fn main() -> Result<(), Error> {
-    let mut dev_name = String::from("00000001");
-    dev_name.retain(|c| c.to_digit(32).unwrap() <= 9);
-    let dev_name = CString::new(dev_name).expect("CString::new failed.");
-    let mut dev_index = 0;
-
-    unsafe {
-        dev_index = verbose_device_search(dev_name.into_raw());
-        if dev_index == -1 {
-            let dev_name = CString::new("0").expect("CString::new failed.");
-            dev_index = verbose_device_search(dev_name.into_raw());
-        }
-    }
-
-    if dev_index < 0 {
-        panic!("Did not find supported device.")
-    }
-
-    let signal_complex = true;
     let sampling_rate: f32 = 2.046e6;
     let frequency: u32 = 1574.42e6 as u32;
     let freq_IF: f32 = 0.0;
-    let mut gain = 0;
+    let gain = 0;
     let ppm_error = 0;
-    let mut dev = ptr::null_mut();
+    let mut rtlsdr_dev_wrapper = rtlsdr_dev_wrapper::new();
+    rtlsdr_dev_wrapper.open();
+    rtlsdr_dev_wrapper.rtlsdr_config(frequency, sampling_rate as u32, gain, ppm_error);
 
-    unsafe {
-        dev = ptr::null_mut() as *mut rtlsdr_dev;
-        let r = rtlsdr_open(&mut dev, dev_index as u32);
-        if r < 0 {
-            panic!("Failed to open rtlsdr device at {}", dev_index);
-        }
-
-        if dev.is_null() {
-            panic!("Failed to open rtlsdr device at {}", dev_index);
-        } else {
-            verbose_set_frequency(dev, frequency);
-            verbose_set_sample_rate(dev, sampling_rate as u32);
-        }
-
-        if gain == 0 {
-            /* Enable automatic gain */
-            verbose_auto_gain(dev);
-        } else {
-            /* Enable manual gain */
-            gain = nearest_gain(dev, gain);
-            verbose_gain_set(dev, gain);
-        }
-
-        verbose_ppm_set(dev, ppm_error);
-        verbose_reset_buffer(dev); // Reset endpoint before we start reading from it (mandatory)
-    }
+    thread::sleep(time::Duration::from_millis(500));
 
     // Ctrl-C interruption
     let term = Arc::new(AtomicBool::new(true));
@@ -96,22 +57,16 @@ async fn main() -> Result<(), Error> {
     })
     .expect("Error setting Ctrl-C handler");
 
-    // Start RTL_SDR
-    let mut r: i32 = 0;
-    unsafe {
-        let mut ctx = ptr::null_mut();
-        r = rtlsdr_read_async(
-            dev,
-            Some(rust_callback_wrapper),
-            ctx,
-            app_buffer_utilities::RTL_BUFF_NUM as u32,
+    task::spawn_blocking(move || {
+        rtlsdr_dev_wrapper.rtlsdr_read_async_wrapper(
+            app_buffer_utilities::APP_BUFFER_NUM as u32,
             app_buffer_utilities::BUFFER_SIZE as u32,
         );
-    }
+    })
+    .await
+    .unwrap();
 
-    if r < 0 {
-        panic!("WARNING: RTL-SDR buffer async read failed.");
-    }
+    thread::sleep(time::Duration::from_millis(200));
 
     let mut acquisition_results: Vec<Arc<Mutex<AcquisitionResult>>> = Vec::new();
     let mut tracking_results: Vec<Arc<Mutex<TrackingResult>>> = Vec::new();
@@ -130,31 +85,23 @@ async fn main() -> Result<(), Error> {
         let trk_result_clone = Arc::clone(&tracking_results[i]);
         let stage_clone = Arc::clone(&stages_all[i]);
         let stop_signal_clone = Arc::clone(&term);
-        handlers.push(
-            thread::Builder::new()
-                .name(format!("{i}").to_string())
-                .spawn(move || {
-                    do_data_process(
-                        sampling_rate,
-                        freq_IF,
-                        stage_clone,
-                        acq_result_clone,
-                        trk_result_clone,
-                        false,
-                        stop_signal_clone,
-                    );
-                    thread::sleep(Duration::from_millis(100));
-                }),
-        );
+        handlers.push(task::spawn_blocking(move || {
+            do_data_process(
+                sampling_rate,
+                freq_IF,
+                stage_clone,
+                acq_result_clone,
+                trk_result_clone,
+                false,
+                stop_signal_clone,
+            );
+        }));
+        //tokio::time::sleep(Duration::from_millis(100)).await;
     }
 
     for handle in handlers {
-        handle.unwrap().join().unwrap();
+        handle.await.unwrap();
     }
 
-    unsafe {
-        rtlsdr_close(dev);
-        libc::free(dev as *mut c_void);
-    }
     Ok(())
 }
