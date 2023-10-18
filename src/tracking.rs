@@ -171,11 +171,6 @@ pub fn do_track(
     trk_result.carrier_freq = carrier_freq;
     trk_result.code_freq = code_freq;
 
-    println!(
-        "prn: {}, i_prompt: {}, q_prompt: {}, i_early: {}, q_early: {},  i_late: {}, q_late: {}, carrier_freq: {}",
-        prn, i_prompt, q_prompt, i_early, q_early, i_late, q_late, carrier_freq
-    );
-
     let buffer_loc = buffer_location + num_ca_code_samples;
     println!("buffer location: {}", buffer_loc);
 

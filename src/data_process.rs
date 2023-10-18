@@ -9,6 +9,8 @@ use std::sync::{Arc, Mutex, RwLock};
 use std::thread;
 use tokio::time::Duration;
 
+const RETRY_INTERVAL: u64 = 10; // Seconds
+
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum ProcessStage {
     SignalAcquisition,
@@ -58,10 +60,10 @@ pub fn do_data_process(
                             .try_lock()
                             .expect("Error in locking AcquisitionResult after acquisition")
                             .prn,
-                        10
+                        RETRY_INTERVAL
                     );
                     //sleep(Duration::from_secs(3)).await;
-                    thread::sleep(Duration::from_secs(10));
+                    thread::sleep(Duration::from_secs(RETRY_INTERVAL));
                 };
             }
 
@@ -133,19 +135,26 @@ mod test {
 
     #[tokio::test]
     async fn test_data_process() {
+        use tokio::task;
         let t1: Instant = Instant::now();
         let f_name = "src/test_data/GPS_recordings/gioveAandB_short.bin";
         let f_sampling: f32 = 16.3676e6;
         let f_inter_freq: f32 = 4.1304e6;
 
         // Ctrl-C interruption
-        let term = Arc::new(AtomicBool::new(false));
-        let r = term.clone();
+        let term = Arc::new(AtomicBool::new(true));
+        let term_r = term.clone();
 
-        let handle = thread::spawn(move || read_data_file(f_name));
-        handle.join().unwrap();
+        ctrlc::set_handler(move || {
+            term_r.store(false, Ordering::SeqCst);
+        })
+        .expect("Error setting Ctrl-C handler");
 
-        thread::sleep(Duration::from_millis(50));
+        task::spawn_blocking(move || read_data_file(f_name))
+            .await
+            .unwrap();
+
+        thread::sleep(Duration::from_millis(500));
 
         let mut acquisition_results: Vec<Arc<Mutex<AcquisitionResult>>> = Vec::new();
         let mut tracking_results: Vec<Arc<Mutex<TrackingResult>>> = Vec::new();
@@ -164,26 +173,21 @@ mod test {
             let trk_result_clone = Arc::clone(&tracking_results[i]);
             let stage_clone = Arc::clone(&stages_all[i]);
             let stop_signal_clone = Arc::clone(&term);
-            handlers.push(
-                thread::Builder::new()
-                    .name(format!("{i}").to_string())
-                    .spawn(move || {
-                        do_data_process(
-                            f_sampling,
-                            f_inter_freq,
-                            stage_clone,
-                            acq_result_clone,
-                            trk_result_clone,
-                            false,
-                            stop_signal_clone,
-                        );
-                        thread::sleep(Duration::from_millis(100));
-                    }),
-            );
+            handlers.push(task::spawn_blocking(move || {
+                do_data_process(
+                    f_sampling,
+                    f_inter_freq,
+                    stage_clone,
+                    acq_result_clone,
+                    trk_result_clone,
+                    false,
+                    stop_signal_clone,
+                );
+            }));
         }
 
         for handle in handlers {
-            handle.unwrap().join().unwrap();
+            handle.await.unwrap();
         }
     }
 }

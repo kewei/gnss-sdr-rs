@@ -27,6 +27,7 @@ mod gps_constants;
 mod rtlsdr_wrapper;
 mod test_utilities;
 use rtlsdr_wrapper::rtlsdr_dev_wrapper;
+mod comm_func;
 
 include!(concat!(env!("OUT_DIR"), "/bindings.rs"));
 
@@ -66,7 +67,7 @@ async fn main() -> Result<(), Error> {
     .await
     .unwrap();
 
-    thread::sleep(time::Duration::from_millis(200));
+    thread::sleep(time::Duration::from_millis(500));
 
     let mut acquisition_results: Vec<Arc<Mutex<AcquisitionResult>>> = Vec::new();
     let mut tracking_results: Vec<Arc<Mutex<TrackingResult>>> = Vec::new();

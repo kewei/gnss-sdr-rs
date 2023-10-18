@@ -1,3 +1,4 @@
+use itertools::Itertools;
 use puruspe::invgammp;
 use rayon::prelude::*;
 use realfft::RealFftPlanner;
@@ -11,6 +12,7 @@ use std::fmt;
 use std::sync::{Arc, Mutex};
 
 use crate::app_buffer_utilities::{get_current_buffer, APPBUFF, BUFFER_SIZE};
+use crate::comm_func::max_float_vec;
 use crate::gps_ca_prn::generate_ca_code;
 use crate::gps_constants;
 
@@ -69,6 +71,8 @@ pub fn do_acquisition(
             / gps_constants::GPS_L1_CA_CODE_LENGTH_CHIPS))
         .round() as usize;
     let fft_length = num_ca_code_samples; // One CA code length
+    let samples_per_chip =
+        (freq_sampling / gps_constants::GPS_L1_CA_CODE_RATE_CHIPS_PER_S).round() as usize;
 
     let app_buff_clone = unsafe { Arc::clone(&APPBUFF) };
     let app_buff_value = app_buff_clone
@@ -78,7 +82,7 @@ pub fn do_acquisition(
     let mut buffer_location = app_buff_value.buff_cnt * BUFFER_SIZE - n_samples;
     let long_samples = get_current_buffer(buffer_location, 2 * n_samples);
 
-    let samples_iq: Vec<Complex32> = long_samples[..2 * num_ca_code_samples]
+    let samples_iq: Vec<Complex32> = long_samples[..4 * num_ca_code_samples]
         .chunks_exact(2)
         .map(|chunk| {
             if let [i, q] = chunk {
@@ -88,6 +92,9 @@ pub fn do_acquisition(
             }
         })
         .collect();
+
+    let samples_iq_1st = &samples_iq[..num_ca_code_samples];
+    let samples_iq_2nd = &samples_iq[num_ca_code_samples..];
 
     let mut real_planner = RealFftPlanner::<f32>::new();
     let r_fft = real_planner.plan_fft_forward(fft_length);
@@ -122,31 +129,61 @@ pub fn do_acquisition(
     ca_code_fft_conj.extend(second_part.iter());
 
     let mut d_max_2d: Vec<Vec<f32>> = Vec::with_capacity(steps as usize);
-    let mut carrier_freq: f32 = 0.0;
+    let mut d_max_2d_2nd: Vec<Vec<f32>> = Vec::with_capacity(steps as usize);
+
     for step in 0..steps {
-        carrier_freq =
+        let carrier_freq =
             freq_IF + -1.0 * FREQ_SEARCH_ACQUISITION_HZ + (step * FREQ_SEARCH_STEP_HZ) as f32;
-        let mut sum_i_q: Vec<Complex32> = (0..fft_length)
+        let mut sum_i_q_1st: Vec<Complex32> = (0..fft_length)
             .map(|x| {
                 Complex32::new(
                     (2.0 * PI * carrier_freq * 1.0 / freq_sampling * x as f32).cos(),
                     (2.0 * PI * carrier_freq * 1.0 / freq_sampling * x as f32).sin(),
-                ) * samples_iq[x]
+                ) * samples_iq_1st[x]
             })
             .collect();
-        c_fft.process(&mut sum_i_q);
+        c_fft.process(&mut sum_i_q_1st);
 
-        let mut cross_corr: Vec<Complex32> = sum_i_q
+        let mut cross_corr_1st: Vec<Complex32> = sum_i_q_1st
             .iter()
             .zip(ca_code_fft_conj.iter())
             .map(|(x, y)| x * y)
             .collect();
 
-        inv_fft.process(&mut cross_corr);
-        d_max_2d.push(cross_corr.iter().map(|x| x.norm()).collect());
+        inv_fft.process(&mut cross_corr_1st);
+        let result1: Vec<f32> = cross_corr_1st.iter().map(|x| x.norm()).collect();
+        //d_max_2d_1st.push(cross_corr_1st.iter().map(|x| x.norm()).collect());
+
+        let mut sum_i_q_2nd: Vec<Complex32> = (0..fft_length)
+            .map(|x| {
+                Complex32::new(
+                    (2.0 * PI * carrier_freq * 1.0 / freq_sampling * x as f32).cos(),
+                    (2.0 * PI * carrier_freq * 1.0 / freq_sampling * x as f32).sin(),
+                ) * samples_iq_2nd[x]
+            })
+            .collect();
+        c_fft.process(&mut sum_i_q_2nd);
+
+        let mut cross_corr_2nd: Vec<Complex32> = sum_i_q_2nd
+            .iter()
+            .zip(ca_code_fft_conj.iter())
+            .map(|(x, y)| x * y)
+            .collect();
+
+        inv_fft.process(&mut cross_corr_2nd);
+        let result2: Vec<f32> = cross_corr_2nd.iter().map(|x| x.norm()).collect();
+        //d_max_2d_2nd.push(cross_corr_2nd.iter().map(|x| x.norm()).collect());
+        d_max_2d.push(
+            if max_float_vec(result1.to_owned())?.0 >= max_float_vec(result2.to_owned())?.0 {
+                result1
+            } else {
+                result2
+            },
+        );
     }
     if let Some((code_phase, doppler_freq_step, mag_relative)) =
-        satellite_detection(d_max_2d, test_threhold)
+        satellite_detection_two_peaks(d_max_2d, samples_per_chip, num_ca_code_samples, 1.4)
+    //satellite_detection_ca_cfar(d_max_2d, test_threhold)
     {
         acq_result.code_phase = code_phase;
         acq_result.mag_relative = mag_relative;
@@ -268,7 +305,10 @@ fn finer_doppler(
 
 /// Check whether the satellite is visible with Cell-Averaging Constant False Alarm Rate (CA-CFAR) algorithm
 ///
-fn satellite_detection(corr_results: Vec<Vec<f32>>, threshold: f32) -> Option<(usize, usize, f32)> {
+fn satellite_detection_ca_cfar(
+    corr_results: Vec<Vec<f32>>,
+    threshold: f32,
+) -> Option<(usize, usize, f32)> {
     let mut mag_max: f32 = 0.0;
     let mut code_phase: usize = 0;
     let mut power: f32 = 0.0;
@@ -296,6 +336,64 @@ fn satellite_detection(corr_results: Vec<Vec<f32>>, threshold: f32) -> Option<(u
 
     if test_statistic > threshold {
         Some((code_phase, doppler_freq_step, test_statistic))
+    } else {
+        None
+    }
+}
+
+fn satellite_detection_two_peaks(
+    corr_results: Vec<Vec<f32>>,
+    samples_per_chip: usize,
+    num_ca_code_samples: usize,
+    threashold: f32,
+) -> Option<(usize, usize, f32)> {
+    let max_col: Vec<f32> = (0..corr_results.len())
+        .map(|i| {
+            max_float_vec(corr_results[i].to_owned())
+                .expect("Error in max float column vector in satellite detection")
+                .0
+        })
+        .collect();
+    let freq_index = max_float_vec(max_col)
+        .expect("Error in find frequency index in satellite detection")
+        .1;
+
+    let max_row: Vec<f32> = (0..corr_results[0].len())
+        .map(|x| {
+            max_float_vec(
+                (0..corr_results.len())
+                    .map(|y| corr_results[y][x])
+                    .collect::<Vec<f32>>(),
+            )
+            .expect("Error in max float row vector in satellite detection")
+            .0
+        })
+        .collect();
+    let (first_peak, code_phase) = max_float_vec(max_row.to_owned())
+        .expect("Error in find the first peak in satellite detection");
+
+    let left_index = code_phase - samples_per_chip;
+    let right_index = code_phase + samples_per_chip;
+    let mut new_corr_results: Vec<f32> = Vec::new();
+
+    if left_index < 1 {
+        new_corr_results =
+            corr_results[freq_index][right_index - 1..num_ca_code_samples + left_index].to_vec();
+    } else if right_index >= num_ca_code_samples {
+        new_corr_results =
+            corr_results[freq_index][right_index - num_ca_code_samples - 1..left_index].to_vec();
+    } else {
+        new_corr_results = corr_results[freq_index][0..left_index]
+            .iter()
+            .chain(corr_results[freq_index][right_index..num_ca_code_samples].iter())
+            .copied()
+            .collect();
+    }
+
+    let (second_peak, _) = max_float_vec(new_corr_results)
+        .expect("Error in finding second peak in satellite detection");
+    if first_peak / second_peak > threashold {
+        Some((code_phase, freq_index, first_peak / second_peak))
     } else {
         None
     }
