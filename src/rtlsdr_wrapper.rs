@@ -1,5 +1,7 @@
 use std::ffi::{c_uchar, c_uint, c_void, CString};
 use std::ptr;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 
 include!(concat!(env!("OUT_DIR"), "/bindings.rs"));
 
@@ -73,18 +75,27 @@ impl rtlsdr_dev_wrapper {
         }
     }
 
-    pub fn rtlsdr_read_async_wrapper(&mut self, num_buff: u32, buff_size: u32) -> i32 {
+    pub fn rtlsdr_read_async_wrapper(
+        &mut self,
+        num_buff: u32,
+        buff_size: u32,
+        stop_signal: Arc<AtomicBool>,
+    ) {
         //let dev = ptr::null_mut() as *mut rtlsdr_dev_t;
-        let ctx = ptr::null_mut();
-        unsafe {
-            rtlsdr_read_async(
-                self.dev,
-                Some(rust_callback_wrapper),
-                ctx,
-                num_buff,
-                buff_size,
-            )
+        while stop_signal.load(Ordering::SeqCst) {
+            let ctx = ptr::null_mut();
+            unsafe {
+                rtlsdr_read_async(
+                    self.dev,
+                    Some(rust_callback_wrapper),
+                    ctx,
+                    num_buff,
+                    buff_size,
+                );
+            }
         }
+        unsafe { rtlsdr_cancel_async(self.dev) };
+        self.rtlsdr_close_wrapper();
     }
 
     pub fn rtlsdr_close_wrapper(&mut self) {

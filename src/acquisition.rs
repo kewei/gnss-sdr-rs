@@ -372,18 +372,19 @@ fn satellite_detection_two_peaks(
     let (first_peak, code_phase) = max_float_vec(max_row.to_owned())
         .expect("Error in find the first peak in satellite detection");
 
-    let left_index = code_phase - samples_per_chip;
+    let left_index = code_phase as i64 - samples_per_chip as i64;
     let right_index = code_phase + samples_per_chip;
     let mut new_corr_results: Vec<f32> = Vec::new();
 
     if left_index < 1 {
-        new_corr_results =
-            corr_results[freq_index][right_index - 1..num_ca_code_samples + left_index].to_vec();
+        let idx = (num_ca_code_samples as i64 + left_index) as usize;
+        new_corr_results = corr_results[freq_index][right_index - 1..idx].to_vec();
     } else if right_index >= num_ca_code_samples {
-        new_corr_results =
-            corr_results[freq_index][right_index - num_ca_code_samples - 1..left_index].to_vec();
+        new_corr_results = corr_results[freq_index]
+            [right_index - num_ca_code_samples - 1..left_index as usize]
+            .to_vec();
     } else {
-        new_corr_results = corr_results[freq_index][0..left_index]
+        new_corr_results = corr_results[freq_index][0..left_index as usize]
             .iter()
             .chain(corr_results[freq_index][right_index..num_ca_code_samples].iter())
             .copied()
