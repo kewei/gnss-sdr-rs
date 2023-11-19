@@ -19,7 +19,7 @@ use crate::gps_constants;
 static FFT_LENGTH_MS: usize = 1;
 static FREQ_SEARCH_ACQUISITION_HZ: f32 = 14e3; // Hz
 static FREQ_SEARCH_STEP_HZ: i32 = 500; // Hz
-pub static PRN_SEARCH_ACQUISITION_TOTAL: usize = 32; // 32 PRN codes to search
+pub const PRN_SEARCH_ACQUISITION_TOTAL: usize = 32; // 32 PRN codes to search
 static LONG_SAMPLES_LENGTH: i8 = 11; // ms
 
 #[derive(Debug, Clone)]

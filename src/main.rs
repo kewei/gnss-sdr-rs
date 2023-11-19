@@ -87,12 +87,15 @@ fn main() -> Result<(), Error> {
         tracking_results.push(Arc::new(Mutex::new(trk_result)));
         stages_all.push(Arc::new(Mutex::new(ProcessStage::SignalAcquisition)));
     }
+    let mut cnt_all: Vec<Arc<Mutex<u64>>> = Vec::with_capacity(PRN_SEARCH_ACQUISITION_TOTAL);
+    (0..PRN_SEARCH_ACQUISITION_TOTAL).for_each(|_| cnt_all.push(Arc::new(Mutex::new(0))));
 
     for i in 0..PRN_SEARCH_ACQUISITION_TOTAL {
         let acq_result_clone = Arc::clone(&acquisition_results[i]);
         let trk_result_clone = Arc::clone(&tracking_results[i]);
         let stage_clone = Arc::clone(&stages_all[i]);
         let term_signal_clone = Arc::clone(&term);
+        let cnt_each = Arc::clone(&cnt_all[i]);
         handlers.push(
             thread::Builder::new()
                 .name(format!("PRN: {i}").to_string())
@@ -104,6 +107,7 @@ fn main() -> Result<(), Error> {
                         acq_result_clone,
                         trk_result_clone,
                         false,
+                        cnt_each,
                         term_signal_clone,
                     );
                 })

@@ -48,10 +48,16 @@ pub extern "C" fn callback_read_buffer(buff: Arc<*const c_uchar>, buff_len: c_ui
     app_buffer_clone_val
         .app_buffer
         .write_latest(data_slice, (cnt * 2 * BUFFER_SIZE) as isize);
+    println!(
+        "{:?}",
+        (0..10)
+            .map(|x| app_buffer_clone_val.app_buffer[x + app_buffer_clone_val.buff_cnt as isize])
+            .collect::<Vec<u8>>()
+    );
 
     // Increment buff_cnt
     app_buffer_clone_val.buff_cnt = (app_buffer_clone_val.buff_cnt + 1) % APP_BUFFER_NUM;
-    println!("buff_cnt: {}", app_buffer_clone_val.buff_cnt);
+    //println!("buff_cnt: {}", app_buffer_clone_val.buff_cnt);
 }
 
 #[no_mangle]

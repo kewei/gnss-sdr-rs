@@ -1,7 +1,7 @@
 use crate::acquisition::PRN_SEARCH_ACQUISITION_TOTAL;
 use crate::acquisition::{do_acquisition, AcquisitionResult};
 use crate::app_buffer_utilities::{get_current_buffer, APPBUFF, BUFFER_SIZE};
-use crate::decoding::nav_decoding;
+use crate::decoding::{nav_decoding, SubframeSyncStatus};
 use crate::gps_constants;
 use crate::tracking::{do_track, TrackingResult};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -25,9 +25,12 @@ pub fn do_data_process(
     acquisition_result_thread: Arc<Mutex<AcquisitionResult>>,
     tracking_result_thread: Arc<Mutex<TrackingResult>>,
     is_complex: bool,
+    cnt_each: Arc<Mutex<u64>>,
     term_signal: Arc<AtomicBool>,
 ) {
     let mut buffer_location = 0;
+    let mut cnt = cnt_each.lock().expect("Error in locking cnt");
+    let mut sf_sync_status = SubframeSyncStatus::new();
     while term_signal.load(Ordering::SeqCst) {
         let stage_thread_clone = Arc::clone(&stage_thread);
         let mut stage = stage_thread_clone
@@ -36,6 +39,7 @@ pub fn do_data_process(
 
         match *stage {
             ProcessStage::SignalAcquisition => {
+                sf_sync_status = SubframeSyncStatus::new();
                 let acq_result_clone = acquisition_result_thread.clone();
                 if let Ok(buf_location) =
                     do_acquisition(acq_result_clone, freq_sampling, freq_IF, is_complex)
@@ -62,7 +66,6 @@ pub fn do_data_process(
                             .prn,
                         RETRY_INTERVAL
                     );
-                    //sleep(Duration::from_secs(3)).await;
                     thread::sleep(Duration::from_secs(RETRY_INTERVAL));
                 };
             }
@@ -103,6 +106,8 @@ pub fn do_data_process(
                         println!("Tracking failed.");
                     };
                     *stage = ProcessStage::SignalTracking;
+                    *cnt += 1;
+                    nav_decoding(tracking_result_thread.clone(), *cnt, &mut sf_sync_status);
                 } else {
                     //sleep(Duration::from_millis(1)).await;
                     thread::sleep(Duration::from_millis(1));
@@ -111,7 +116,8 @@ pub fn do_data_process(
 
             ProcessStage::MessageDecoding => {
                 let trk_result_clone = tracking_result_thread.clone();
-                if let Ok(pos_result) = nav_decoding(trk_result_clone) {
+                if let Ok(pos_result) = nav_decoding(trk_result_clone, *cnt, &mut sf_sync_status) {
+                    *stage = ProcessStage::SignalTracking;
                 } else {
                     todo!(); // do tracking again with new data
                 }
@@ -166,6 +172,8 @@ mod test {
             tracking_results.push(Arc::new(Mutex::new(trk_result)));
             stages_all.push(Arc::new(Mutex::new(ProcessStage::SignalAcquisition)));
         }
+        let mut cnt_all: Vec<Arc<Mutex<u64>>> = Vec::with_capacity(PRN_SEARCH_ACQUISITION_TOTAL);
+        (0..PRN_SEARCH_ACQUISITION_TOTAL).for_each(|_| cnt_all.push(Arc::new(Mutex::new(0))));
 
         let mut handlers = Vec::new();
         for i in 0..PRN_SEARCH_ACQUISITION_TOTAL {
@@ -173,6 +181,7 @@ mod test {
             let trk_result_clone = Arc::clone(&tracking_results[i]);
             let stage_clone = Arc::clone(&stages_all[i]);
             let stop_signal_clone = Arc::clone(&term);
+            let cnt_each = Arc::clone(&cnt_all[i]);
             handlers.push(task::spawn_blocking(move || {
                 do_data_process(
                     f_sampling,
@@ -181,6 +190,7 @@ mod test {
                     acq_result_clone,
                     trk_result_clone,
                     false,
+                    cnt_each,
                     stop_signal_clone,
                 );
             }));
