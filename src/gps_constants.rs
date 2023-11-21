@@ -9,7 +9,7 @@ pub const GPS_L1_CA_CODE_PERIOD_MS: u16 = 1; // ms
 pub const GPS_L1_CA_BIT_PERIOD_MS: u16 = 20; // ms
 
 // Navigation message
-pub const GPS_CA_PREAMBLE: Vec<i8> = vec![1, -1, -1, -1, 1, -1, 1, 1];
+pub const GPS_CA_PREAMBLE: [i8; 8] = [1, -1, -1, -1, 1, -1, 1, 1];
 pub const GPS_CA_PREAMBLE_DURATION_S: f32 = 0.160;
 pub const GPS_CA_PREAMBLE_LENGTH_BITS: u16 = 8;
 pub const GPS_CA_PREAMBLE_LENGTH_SYMBOLS: i16 = 160;
@@ -23,3 +23,8 @@ pub const GPS_WORD_LENGTH_BYTES: u16 = 4;
 pub const GPS_SUBFRAME_LENGTH_BYTES: u16 = 40;
 pub const GPS_SUBFRAME_BITS: u16 = 300;
 pub const GPS_SUBFRAME_MS: u16 = 6000;
+
+pub const GPS_TOW_BITS: u16 = 17;
+pub const GPS_CA_PARITY_CHECK_BITS: u16 = 6;
+
+pub const GPS_POSITION_UPDATE_INTERVAL: u8 = 1; // s
