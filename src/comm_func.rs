@@ -1,7 +1,8 @@
-use chrono::Utc;
+use chrono::{Datelike, Utc};
 use num::Float;
+use scraper::{Html, Selector};
 use std::cmp::PartialEq;
-use std::io::Error;
+use std::error::Error;
 
 pub fn max_float_vec<T: Clone + PartialEq + Float>(
     vec_f: Vec<T>,
@@ -24,25 +25,48 @@ pub fn max_float_vec<T: Clone + PartialEq + Float>(
     Ok((mag_max, ind_max))
 }
 
-pub fn fectch_nav_file() -> Result<i8, Error> {
+pub fn fetch_nav_file() -> Result<String, Box<dyn Error>> {
     let url_igs_folder = "https://igs.bkg.bund.de/root_ftp/IGS/BRDC/";
     let t1 = Utc::now();
-    println!("{:?}", t1);
-    Ok(1)
+    let year = t1.year();
+    let day_year = t1.ordinal();
+    let url_folder_rinex =
+        url_igs_folder.to_owned() + &year.to_string() + "/" + &day_year.to_string();
+    let http_response = reqwest::blocking::get(url_folder_rinex.to_owned())?.text()?;
+    let http_parse = Html::parse_document(&http_response);
+    let td_selector = Selector::parse("td").unwrap();
+    let a_selector = Selector::parse("a").unwrap();
+    let mut file_url = "";
+    for td_element in http_parse.select(&td_selector) {
+        if let Some(f) = td_element.select(&a_selector).next() {
+            file_url = f.attr("href").unwrap();
+            if file_url.ends_with("GN.rnx.gz") {
+                break;
+            }
+        }
+    }
+    if file_url.is_empty() {
+        panic!("Could not download GPS Navigation RINEX file from https://igs.bkg.bund.de/");
+    }
+
+    Ok((url_folder_rinex + file_url).to_string())
 }
 
 #[cfg(test)]
 mod tests {
-    use super::fectch_nav_file;
+    use super::fetch_nav_file;
 
-    use super::*;
-
+    //#[tokio::test]
     #[test]
     fn test_fetch_nav_file() {
-        if let Ok(res) = fectch_nav_file() {
-            assert!(true);
-        } else {
-            assert!(false);
-        }
+        match fetch_nav_file() {
+            Ok(res) => {
+                println!("{:#?}", res);
+            }
+            Err(e) => {
+                println!("Wrong");
+                dbg!(e);
+            }
+        };
     }
 }
