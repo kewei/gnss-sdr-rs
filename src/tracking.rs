@@ -1,13 +1,11 @@
 use itertools::{izip, Itertools};
 use rustfft::num_complex::Complex32;
-use std::collections::HashMap;
 use std::error::Error;
 use std::f32::consts::PI;
 use std::sync::{Arc, Mutex};
 
 use crate::acquisition::AcquisitionResult;
 use crate::app_buffer_utilities::{get_current_buffer, APPBUFF, BUFFER_SIZE};
-use crate::gps_ca_prn::generate_ca_code;
 use crate::gps_constants;
 
 static DLL_DUMPING_RATIO: f32 = 0.7;

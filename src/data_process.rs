@@ -1,11 +1,10 @@
-use crate::acquisition::PRN_SEARCH_ACQUISITION_TOTAL;
 use crate::acquisition::{do_acquisition, AcquisitionResult};
-use crate::app_buffer_utilities::{get_current_buffer, APPBUFF, BUFFER_SIZE};
+use crate::app_buffer_utilities::{APPBUFF, BUFFER_SIZE};
 use crate::decoding::{nav_decoding, SubframeSyncStatus};
 use crate::gps_constants;
 use crate::tracking::{do_track, TrackingResult};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::{Arc, Mutex};
 use std::thread;
 use tokio::time::Duration;
 
@@ -128,7 +127,7 @@ pub fn do_data_process(
 
 mod test {
     use super::*;
-    use crate::acquisition::do_acquisition;
+    use crate::acquisition::{do_acquisition, PRN_SEARCH_ACQUISITION_TOTAL};
     use crate::test_utilities::plot_samples;
     use crate::test_utilities::read_data_file;
     use binrw::BinReaderExt;

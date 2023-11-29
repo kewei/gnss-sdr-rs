@@ -5,7 +5,7 @@ use scraper::{Html, Selector};
 use std::cmp::PartialEq;
 use std::error::Error;
 use std::fs::File;
-use std::io::{copy, BufReader, Cursor};
+use std::io::{copy, BufReader, Cursor, Read, Write};
 
 pub fn max_float_vec<T: Clone + PartialEq + Float>(
     vec_f: Vec<T>,
@@ -35,10 +35,7 @@ pub async fn fetch_nav_file() -> Result<String, Box<dyn Error>> {
     let day_year = t1.ordinal();
     let url_folder_rinex =
         url_igs_folder.to_owned() + &year.to_string() + "/" + &day_year.to_string() + "/";
-    let http_response = reqwest::get(url_folder_rinex.to_owned())
-        .await?
-        .text()
-        .await?;
+    let http_response = reqwest::get(&url_folder_rinex).await?.text().await?;
     let http_parse = Html::parse_document(&http_response);
     let td_selector = Selector::parse("td").unwrap();
     let a_selector = Selector::parse("a").unwrap();
@@ -57,7 +54,7 @@ pub async fn fetch_nav_file() -> Result<String, Box<dyn Error>> {
 
     let gps_nav_url = (url_folder_rinex + file_name).to_string();
     println!("{}", gps_nav_url);
-    let response = reqwest::get(gps_nav_url.to_owned()).await?.bytes().await?;
+    let response = reqwest::get(&gps_nav_url).await?.bytes().await?;
     let mut gps_local_file = File::create(file_name)?;
     let mut content = Cursor::new(response);
     copy(&mut content, &mut gps_local_file)?;
@@ -66,10 +63,14 @@ pub async fn fetch_nav_file() -> Result<String, Box<dyn Error>> {
     (0..3).for_each(|_| {
         rinex_file_name.pop().unwrap();
     });
-    let mut rinex_file = File::create(rinex_file_name)?;
-    let mut rinex_content = GzDecoder::new(gps_local_file);
-    //copy(&mut rinex_content, &mut rinex_file);
-    Ok("Ok".to_string())
+    let gps_local_file = File::open(file_name)?;
+    let mut rinex_content = GzDecoder::new(BufReader::new(gps_local_file));
+    let mut buffer = Vec::new();
+    let mut rinex_file = File::create(&rinex_file_name)?;
+    rinex_content.read_to_end(&mut buffer)?;
+    rinex_file.write_all(&buffer)?;
+
+    Ok(rinex_file_name)
 }
 
 #[cfg(test)]

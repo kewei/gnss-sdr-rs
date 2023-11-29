@@ -1,6 +1,4 @@
-use itertools::Itertools;
 use puruspe::invgammp;
-use rayon::prelude::*;
 use realfft::RealFftPlanner;
 use rustfft::algorithm::Radix4;
 use rustfft::num_complex::{Complex, Complex32, ComplexFloat};
