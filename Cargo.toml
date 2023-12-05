@@ -26,7 +26,7 @@ slice_ring_buf = "0.2.0"
 num = "0.4.1"
 reqwest = { version = "0.11", features = ["blocking", "json"] }
 scraper = "0.18.1"
-chrono = "0.4.9"
+chrono = "0.4.31"
 flate2 = "1.0"
 
 [build-dependencies]

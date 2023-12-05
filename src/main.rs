@@ -14,6 +14,7 @@ use std::{thread, time};
 use tokio::task;
 use tokio::time::Duration;
 mod acquisition;
+mod rinex;
 use acquisition::AcquisitionResult;
 use acquisition::PRN_SEARCH_ACQUISITION_TOTAL;
 mod tracking;
