@@ -48,6 +48,7 @@ impl GnssRinexNavHeader {
     }
 }
 
+#[derive(Debug)]
 pub struct BroadCastOrbit1 {
     iode: f32,
     crs: f32,
@@ -65,6 +66,8 @@ impl BroadCastOrbit1 {
         }
     }
 }
+
+#[derive(Debug)]
 pub struct BroadCastOrbit2 {
     cuc: f32,
     e_eccentricity: f32,
@@ -83,6 +86,7 @@ impl BroadCastOrbit2 {
     }
 }
 
+#[derive(Debug)]
 pub struct BroadCastOrbit3 {
     toe: f32,
     cic: f32,
@@ -101,6 +105,7 @@ impl BroadCastOrbit3 {
     }
 }
 
+#[derive(Debug)]
 pub struct BroadCastOrbit4 {
     i0: f32,
     crc: f32,
@@ -119,6 +124,7 @@ impl BroadCastOrbit4 {
     }
 }
 
+#[derive(Debug)]
 pub struct BroadCastOrbit5 {
     idot: f32,
     code_on_l2: f32,
@@ -137,6 +143,7 @@ impl BroadCastOrbit5 {
     }
 }
 
+#[derive(Debug)]
 pub struct BroadCastOrbit6 {
     sv_accuracy: f32,
     sv_health: f32,
@@ -155,6 +162,7 @@ impl BroadCastOrbit6 {
     }
 }
 
+#[derive(Debug)]
 pub struct BroadCastOrbit7 {
     t_transmission_message: f32,
     fit_interval_hours: f32,
@@ -169,6 +177,7 @@ impl BroadCastOrbit7 {
     }
 }
 
+#[derive(Debug)]
 pub struct GnssRinexNavRecord {
     satellite_sys: String,
     satellite_number: u16,
@@ -206,7 +215,16 @@ impl GnssRinexNavRecord {
 }
 pub struct GpsRinexNavData {
     rinex_header: GnssRinexNavHeader,
-    rinex_data_record: GnssRinexNavRecord,
+    rinex_data_record: Vec<GnssRinexNavRecord>,
+}
+
+impl GpsRinexNavData {
+    fn new() -> Self {
+        Self {
+            rinex_header: GnssRinexNavHeader::new(),
+            rinex_data_record: Vec::new(),
+        }
+    }
 }
 
 pub fn get_sats_from_rinex(
@@ -259,19 +277,29 @@ pub fn get_sats_from_rinex(
     }
 
     let mut n = 0;
-    let mut rinex_record = GnssRinexNavRecord::new();
+    let mut rinex_nav_data = GpsRinexNavData::new();
+    rinex_nav_data.rinex_header = rinex_header;
     loop {
         line_len = reader.read_line(&mut line)?;
         if line_len == 0 {
-            return Err(Box::new(RinexError(
-                "The GNSS RINEX navigation data is expected".into(),
-            )));
+            break;
         }
-        get_rinex_nav_record(n, &line, &mut rinex_record);
+        let mut rinex_record = GnssRinexNavRecord::new();
+        if let Some(content) = get_rinex_nav_record(n % 8, &line, &mut rinex_record) {
+            rinex_nav_data.rinex_data_record.push(rinex_record);
+        }
         n += 1;
+        line.clear();
     }
 
-    dbg!(rinex_header);
+    if n % 8 != 0 {
+        return Err(Box::new(RinexError(
+            "Rinex data record is not complete".into(),
+        )));
+    }
+
+    dbg!(rinex_nav_data.rinex_header);
+    dbg!(&rinex_nav_data.rinex_data_record[2]);
 
     Ok(HashMap::new())
 }
@@ -300,7 +328,7 @@ fn check_header_option_fields<'a>(
 }
 
 fn get_rinex_nav_record<'a>(
-    n: i8,
+    n: u32,
     content: &'a str,
     r_record: &mut GnssRinexNavRecord,
 ) -> Option<&'a str> {
@@ -313,14 +341,119 @@ fn get_rinex_nav_record<'a>(
             let dt = parse_from_str(c[3..23].trim(), "%Y %m %d %H %M %S")
                 .expect("Parsing string to DateTime");
             r_record.time = NaiveDateTime::and_local_timezone(&dt, Utc).unwrap();
+            r_record.sv_clock_bias = c[23..23 + 19]
+                .trim()
+                .parse()
+                .expect("Parsing error for SV clock bias");
+            r_record.sv_clock_drift = c[42..42 + 19]
+                .trim()
+                .parse()
+                .expect("Parsing error for SV clock drift");
+            r_record.sv_clocl_drift_rate = c[61..61 + 19]
+                .trim()
+                .parse()
+                .expect("Parsing error for SV clock drift rate");
         }
-        1 => {}
-        2 => {}
-        3 => {}
-        4 => {}
-        5 => {}
-        6 => {}
-        7 => {}
+        1 => {
+            r_record.orbit1.iode = c[4..4 + 19].trim().parse().expect("Parsing error for IODE");
+            r_record.orbit1.crs = c[23..23 + 19]
+                .trim()
+                .parse()
+                .expect("Parsing error for Crs");
+            r_record.orbit1.delta_n = c[42..42 + 19]
+                .trim()
+                .parse()
+                .expect("Parsing error for Delta n");
+            r_record.orbit1.m0 = c[61..61 + 19].trim().parse().expect("Parsing error for M0");
+        }
+        2 => {
+            r_record.orbit2.cuc = c[4..4 + 19].trim().parse().expect("Parsing error for Cuc");
+            r_record.orbit2.e_eccentricity = c[23..23 + 19]
+                .trim()
+                .parse()
+                .expect("Parsing error for Eccentricity");
+            r_record.orbit2.cus = c[42..42 + 19]
+                .trim()
+                .parse()
+                .expect("Parsing error for Cus");
+            r_record.orbit2.sqrt_a = c[61..61 + 19]
+                .trim()
+                .parse()
+                .expect("Parsing error for sqrt(A)");
+        }
+        3 => {
+            r_record.orbit3.toe = c[4..4 + 19].trim().parse().expect("Parsing error for Toe");
+            r_record.orbit3.cic = c[23..23 + 19]
+                .trim()
+                .parse()
+                .expect("Parsing error for Cic");
+            r_record.orbit3.omega0 = c[42..42 + 19]
+                .trim()
+                .parse()
+                .expect("Parsing error for OMEGA0");
+            r_record.orbit3.cis = c[61..61 + 19]
+                .trim()
+                .parse()
+                .expect("Parsing error for Cis");
+        }
+        4 => {
+            r_record.orbit4.i0 = c[4..4 + 19].trim().parse().expect("Parsing error for i0");
+            r_record.orbit4.crc = c[23..23 + 19]
+                .trim()
+                .parse()
+                .expect("Parsing error for Crc");
+            r_record.orbit4.omega = c[42..42 + 19]
+                .trim()
+                .parse()
+                .expect("Parsing error for omega");
+            r_record.orbit4.omega_dot = c[61..61 + 19]
+                .trim()
+                .parse()
+                .expect("Parsing error for OMEGA DOT");
+        }
+        5 => {
+            r_record.orbit5.idot = c[4..4 + 19].trim().parse().expect("Parsing error for IDOT");
+            r_record.orbit5.code_on_l2 = c[23..23 + 19]
+                .trim()
+                .parse()
+                .expect("Parsing error for Codes on L2");
+            r_record.orbit5.gps_week = c[42..42 + 19]
+                .trim()
+                .parse()
+                .expect("Parsing error for GPS Week");
+            r_record.orbit5.l2_p_flag = c[61..61 + 19]
+                .trim()
+                .parse()
+                .expect("Parsing error for L2 P data flag");
+        }
+        6 => {
+            r_record.orbit6.sv_accuracy = c[4..4 + 19]
+                .trim()
+                .parse()
+                .expect("Parsing error for SV accuracy");
+            r_record.orbit6.sv_health = c[23..23 + 19]
+                .trim()
+                .parse()
+                .expect("Parsing error for SV health");
+            r_record.orbit6.tgd = c[42..42 + 19]
+                .trim()
+                .parse()
+                .expect("Parsing error for TGD");
+            r_record.orbit6.iodc = c[61..61 + 19]
+                .trim()
+                .parse()
+                .expect("Parsing error for IODC");
+        }
+        7 => {
+            r_record.orbit7.t_transmission_message = c[4..4 + 19]
+                .trim()
+                .parse()
+                .expect("Parsing error for Transmission time");
+            r_record.orbit7.fit_interval_hours = c[23..23 + 19]
+                .trim()
+                .parse()
+                .expect("Parsing error for Fit Interval");
+        }
         _ => {
             return None;
         }
