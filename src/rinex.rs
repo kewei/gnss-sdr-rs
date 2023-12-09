@@ -1,11 +1,11 @@
-use chrono::{offset::TimeZone, DateTime, NaiveDateTime};
-use chrono::{FixedOffset, Utc};
+use chrono::{DateTime, Duration, NaiveDateTime, Utc};
 use core::fmt;
 use std::collections::HashMap;
 use std::error::Error;
 use std::fs::File;
 use std::io::{BufRead, BufReader};
 
+type RinexSatsData = (GnssRinexNavHeader, HashMap<String, GnssRinexNavRecord>);
 #[derive(Debug)]
 struct RinexError(String);
 
@@ -48,7 +48,7 @@ impl GnssRinexNavHeader {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy)]
 pub struct BroadCastOrbit1 {
     iode: f32,
     crs: f32,
@@ -67,7 +67,7 @@ impl BroadCastOrbit1 {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy)]
 pub struct BroadCastOrbit2 {
     cuc: f32,
     e_eccentricity: f32,
@@ -86,7 +86,7 @@ impl BroadCastOrbit2 {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy)]
 pub struct BroadCastOrbit3 {
     toe: f32,
     cic: f32,
@@ -105,7 +105,7 @@ impl BroadCastOrbit3 {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy)]
 pub struct BroadCastOrbit4 {
     i0: f32,
     crc: f32,
@@ -124,7 +124,7 @@ impl BroadCastOrbit4 {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy)]
 pub struct BroadCastOrbit5 {
     idot: f32,
     code_on_l2: f32,
@@ -143,7 +143,7 @@ impl BroadCastOrbit5 {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy)]
 pub struct BroadCastOrbit6 {
     sv_accuracy: f32,
     sv_health: f32,
@@ -162,7 +162,7 @@ impl BroadCastOrbit6 {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy)]
 pub struct BroadCastOrbit7 {
     t_transmission_message: f32,
     fit_interval_hours: f32,
@@ -177,10 +177,9 @@ impl BroadCastOrbit7 {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct GnssRinexNavRecord {
-    satellite_sys: String,
-    satellite_number: u16,
+    satellite_sys_num: String,
     time: DateTime<Utc>,
     sv_clock_bias: f32,
     sv_clock_drift: f32,
@@ -197,8 +196,7 @@ pub struct GnssRinexNavRecord {
 impl GnssRinexNavRecord {
     fn new() -> Self {
         Self {
-            satellite_sys: "".to_string(),
-            satellite_number: 0,
+            satellite_sys_num: "".to_string(),
             time: Utc::now(),
             sv_clock_bias: 0.0,
             sv_clock_drift: 0.0,
@@ -229,7 +227,8 @@ impl GpsRinexNavData {
 
 pub fn get_sats_from_rinex(
     file_name: &str,
-) -> Result<HashMap<String, HashMap<String, String>>, Box<dyn Error>> {
+    t_now_utc: DateTime<Utc>,
+) -> Result<RinexSatsData, Box<dyn Error>> {
     let mut rinex_header = GnssRinexNavHeader::new();
     let file = File::open(file_name)?;
     let mut reader = BufReader::new(file);
@@ -277,16 +276,37 @@ pub fn get_sats_from_rinex(
     }
 
     let mut n = 0;
-    let mut rinex_nav_data = GpsRinexNavData::new();
-    rinex_nav_data.rinex_header = rinex_header;
+    let ephemeris_valid_period = Duration::seconds(4 * 3600);
+    let mut t_diff: HashMap<String, Duration> = HashMap::new();
+    //let mut rinex_nav_data = GpsRinexNavData::new();
+    let mut rinex_record = GnssRinexNavRecord::new();
+    let mut sats_record: HashMap<String, GnssRinexNavRecord> = HashMap::new();
+    //rinex_nav_data.rinex_header = rinex_header;
+
     loop {
         line_len = reader.read_line(&mut line)?;
         if line_len == 0 {
             break;
         }
-        let mut rinex_record = GnssRinexNavRecord::new();
-        if let Some(content) = get_rinex_nav_record(n % 8, &line, &mut rinex_record) {
-            rinex_nav_data.rinex_data_record.push(rinex_record);
+        if n % 8 == 0 {
+            rinex_record = GnssRinexNavRecord::new();
+        }
+        let _ = get_rinex_nav_record(n % 8, &line, &mut rinex_record);
+
+        if n % 8 == 7 {
+            //rinex_nav_data.rinex_data_record.push(rinex_record.clone());
+
+            let td = (rinex_record.time.time() - t_now_utc.time()).abs();
+            if td < ephemeris_valid_period
+                && (!t_diff.contains_key(&rinex_record.satellite_sys_num)
+                    || td < t_diff[&rinex_record.satellite_sys_num])
+            {
+                t_diff.insert(rinex_record.satellite_sys_num.to_owned(), td);
+                sats_record.insert(
+                    rinex_record.satellite_sys_num.to_owned(),
+                    rinex_record.clone(),
+                );
+            }
         }
         n += 1;
         line.clear();
@@ -298,10 +318,7 @@ pub fn get_sats_from_rinex(
         )));
     }
 
-    dbg!(rinex_nav_data.rinex_header);
-    dbg!(&rinex_nav_data.rinex_data_record[2]);
-
-    Ok(HashMap::new())
+    Ok((rinex_header, sats_record))
 }
 
 fn check_header_option_fields<'a>(
@@ -336,8 +353,7 @@ fn get_rinex_nav_record<'a>(
     let parse_from_str = NaiveDateTime::parse_from_str;
     match n {
         0 => {
-            r_record.satellite_sys = c[0..1].to_string();
-            r_record.satellite_number = c[1..3].parse().expect("Parsing string to number");
+            r_record.satellite_sys_num = c[0..3].to_string();
             let dt = parse_from_str(c[3..23].trim(), "%Y %m %d %H %M %S")
                 .expect("Parsing string to DateTime");
             r_record.time = NaiveDateTime::and_local_timezone(&dt, Utc).unwrap();
@@ -467,8 +483,14 @@ mod tests {
 
     #[test]
     fn test_read_rinex_data() {
-        if let Ok(res) = get_sats_from_rinex("BRDC00WRD_R_20233330000_01D_GN.rnx") {
-            println!("OK");
+        let rinex_file = "src/test_data/BRDC00WRD_R_20233330000_01D_GN.rnx";
+        let parse_from_str = NaiveDateTime::parse_from_str;
+        let dt = parse_from_str("20231129 211005".trim(), "%Y%m%d %H%M%S")
+            .expect("Parsing string to DateTime");
+        let t_file = NaiveDateTime::and_local_timezone(&dt, Utc).unwrap();
+
+        if let Ok(res) = get_sats_from_rinex(rinex_file, t_file) {
+            println!("{:?}", res.1.len());
         } else {
             println!("Not");
         }
