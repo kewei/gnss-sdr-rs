@@ -50,10 +50,10 @@ impl GnssRinexNavHeader {
 
 #[derive(Debug, Clone, Copy)]
 pub struct BroadCastOrbit1 {
-    iode: f32,
-    crs: f32,
-    delta_n: f32,
-    m0: f32,
+    iode: f64,
+    crs: f64,
+    delta_n: f64,
+    m0: f64,
 }
 
 impl BroadCastOrbit1 {
@@ -69,10 +69,10 @@ impl BroadCastOrbit1 {
 
 #[derive(Debug, Clone, Copy)]
 pub struct BroadCastOrbit2 {
-    cuc: f32,
-    e_eccentricity: f32,
-    cus: f32,
-    sqrt_a: f32,
+    cuc: f64,
+    e_eccentricity: f64,
+    cus: f64,
+    sqrt_a: f64,
 }
 
 impl BroadCastOrbit2 {
@@ -88,10 +88,10 @@ impl BroadCastOrbit2 {
 
 #[derive(Debug, Clone, Copy)]
 pub struct BroadCastOrbit3 {
-    toe: f32,
-    cic: f32,
-    omega0: f32,
-    cis: f32,
+    toe: f64,
+    cic: f64,
+    omega0: f64,
+    cis: f64,
 }
 
 impl BroadCastOrbit3 {
@@ -107,10 +107,10 @@ impl BroadCastOrbit3 {
 
 #[derive(Debug, Clone, Copy)]
 pub struct BroadCastOrbit4 {
-    i0: f32,
-    crc: f32,
-    omega: f32,
-    omega_dot: f32,
+    i0: f64,
+    crc: f64,
+    omega: f64,
+    omega_dot: f64,
 }
 
 impl BroadCastOrbit4 {
@@ -126,10 +126,10 @@ impl BroadCastOrbit4 {
 
 #[derive(Debug, Clone, Copy)]
 pub struct BroadCastOrbit5 {
-    idot: f32,
-    code_on_l2: f32,
-    gps_week: f32,
-    l2_p_flag: f32,
+    idot: f64,
+    code_on_l2: f64,
+    gps_week: f64,
+    l2_p_flag: f64,
 }
 
 impl BroadCastOrbit5 {
@@ -145,10 +145,10 @@ impl BroadCastOrbit5 {
 
 #[derive(Debug, Clone, Copy)]
 pub struct BroadCastOrbit6 {
-    sv_accuracy: f32,
-    sv_health: f32,
-    tgd: f32,
-    iodc: f32,
+    sv_accuracy: f64,
+    sv_health: f64,
+    tgd: f64,
+    iodc: f64,
 }
 
 impl BroadCastOrbit6 {
@@ -164,8 +164,8 @@ impl BroadCastOrbit6 {
 
 #[derive(Debug, Clone, Copy)]
 pub struct BroadCastOrbit7 {
-    t_transmission_message: f32,
-    fit_interval_hours: f32,
+    t_transmission_message: f64,
+    fit_interval_hours: f64,
 }
 
 impl BroadCastOrbit7 {
@@ -181,9 +181,9 @@ impl BroadCastOrbit7 {
 pub struct GnssRinexNavRecord {
     satellite_sys_num: String,
     time: DateTime<Utc>,
-    sv_clock_bias: f32,
-    sv_clock_drift: f32,
-    sv_clocl_drift_rate: f32,
+    sv_clock_bias: f64,
+    sv_clock_drift: f64,
+    sv_clocl_drift_rate: f64,
     orbit1: BroadCastOrbit1,
     orbit2: BroadCastOrbit2,
     orbit3: BroadCastOrbit3,

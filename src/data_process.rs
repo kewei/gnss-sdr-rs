@@ -55,7 +55,8 @@ pub fn do_data_process(
                     );
 
                     *stage = ProcessStage::SignalTracking;
-                } else {
+                }
+                /*else {
                     let acq_result_clone2 = acquisition_result_thread.clone();
                     println!(
                         "PRN {} is not present, retry in {}s",
@@ -67,6 +68,7 @@ pub fn do_data_process(
                     );
                     thread::sleep(Duration::from_secs(RETRY_INTERVAL));
                 };
+                */
             }
 
             ProcessStage::SignalTracking => {
