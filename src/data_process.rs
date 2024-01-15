@@ -1,6 +1,6 @@
 use crate::acquisition::{do_acquisition, AcquisitionResult};
 use crate::app_buffer_utilities::{APPBUFF, BUFFER_SIZE};
-use crate::decoding::{nav_decoding, SubframeSyncStatus};
+use crate::decoding::{nav_decoding, NavSyncStatus};
 use crate::gps_constants;
 use crate::tracking::{do_track, TrackingResult};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -29,7 +29,7 @@ pub fn do_data_process(
 ) {
     let mut buffer_location = 0;
     let mut cnt = cnt_each.lock().expect("Error in locking cnt");
-    let mut sf_sync_status = SubframeSyncStatus::new();
+    let mut nav_sync_status = NavSyncStatus::new();
     while term_signal.load(Ordering::SeqCst) {
         let stage_thread_clone = Arc::clone(&stage_thread);
         let mut stage = stage_thread_clone
@@ -38,7 +38,7 @@ pub fn do_data_process(
 
         match *stage {
             ProcessStage::SignalAcquisition => {
-                sf_sync_status = SubframeSyncStatus::new();
+                nav_sync_status = NavSyncStatus::new();
                 let acq_result_clone = acquisition_result_thread.clone();
                 if let Ok(buf_location) =
                     do_acquisition(acq_result_clone, freq_sampling, freq_IF, is_complex)
@@ -108,7 +108,7 @@ pub fn do_data_process(
                     };
                     *stage = ProcessStage::SignalTracking;
                     *cnt += 1;
-                    nav_decoding(tracking_result_thread.clone(), *cnt, &mut sf_sync_status);
+                    nav_decoding(tracking_result_thread.clone(), *cnt, &mut nav_sync_status);
                 } else {
                     //sleep(Duration::from_millis(1)).await;
                     thread::sleep(Duration::from_millis(1));
@@ -117,7 +117,7 @@ pub fn do_data_process(
 
             ProcessStage::MessageDecoding => {
                 let trk_result_clone = tracking_result_thread.clone();
-                if let Ok(pos_result) = nav_decoding(trk_result_clone, *cnt, &mut sf_sync_status) {
+                if let Ok(pos_result) = nav_decoding(trk_result_clone, *cnt, &mut nav_sync_status) {
                     *stage = ProcessStage::SignalTracking;
                 } else {
                     todo!(); // do tracking again with new data
