@@ -14,7 +14,7 @@ const RETRY_INTERVAL: u64 = 10; // Seconds
 pub enum ProcessStage {
     SignalAcquisition,
     SignalTracking,
-    MessageDecoding,
+    //MessageDecoding,
 }
 
 pub fn do_data_process(
@@ -23,13 +23,14 @@ pub fn do_data_process(
     stage_thread: Arc<Mutex<ProcessStage>>,
     acquisition_result_thread: Arc<Mutex<AcquisitionResult>>,
     tracking_result_thread: Arc<Mutex<TrackingResult>>,
+    nav_stat_thread: Arc<Mutex<NavSyncStatus>>,
     is_complex: bool,
-    cnt_each: Arc<Mutex<u64>>,
+    cnt_each: Arc<Mutex<usize>>,
     term_signal: Arc<AtomicBool>,
 ) {
     let mut buffer_location = 0;
     let mut cnt = cnt_each.lock().expect("Error in locking cnt");
-    let mut nav_sync_status = NavSyncStatus::new();
+
     while term_signal.load(Ordering::SeqCst) {
         let stage_thread_clone = Arc::clone(&stage_thread);
         let mut stage = stage_thread_clone
@@ -38,7 +39,6 @@ pub fn do_data_process(
 
         match *stage {
             ProcessStage::SignalAcquisition => {
-                nav_sync_status = NavSyncStatus::new();
                 let acq_result_clone = acquisition_result_thread.clone();
                 if let Ok(buf_location) =
                     do_acquisition(acq_result_clone, freq_sampling, freq_IF, is_complex)
@@ -99,30 +99,33 @@ pub fn do_data_process(
                         buffer_location,
                     ) {
                         let trk_result_clone = tracking_result_thread.clone();
-                        let trk_result = trk_result_clone
+                        let mut trk_result = trk_result_clone
                             .lock()
                             .expect("Error in locking 'TrackingResult' thread");
                         buffer_location = buffer_loc;
+                        trk_result.buff_location = buffer_loc as u64;
                     } else {
                         println!("Tracking failed.");
                     };
                     *stage = ProcessStage::SignalTracking;
                     *cnt += 1;
-                    nav_decoding(tracking_result_thread.clone(), *cnt, &mut nav_sync_status);
+                    nav_decoding(
+                        tracking_result_thread.clone(),
+                        *cnt,
+                        nav_stat_thread.clone(),
+                    );
                 } else {
                     //sleep(Duration::from_millis(1)).await;
                     thread::sleep(Duration::from_millis(1));
                 }
-            }
-
-            ProcessStage::MessageDecoding => {
-                let trk_result_clone = tracking_result_thread.clone();
-                if let Ok(pos_result) = nav_decoding(trk_result_clone, *cnt, &mut nav_sync_status) {
-                    *stage = ProcessStage::SignalTracking;
-                } else {
-                    todo!(); // do tracking again with new data
-                }
-            }
+            } /* ProcessStage::MessageDecoding => {
+                  let trk_result_clone = tracking_result_thread.clone();
+                  if let Ok(pos_result) = nav_decoding(trk_result_clone, *cnt, &mut nav_sync_status) {
+                      *stage = ProcessStage::SignalTracking;
+                  } else {
+                      todo!(); // do tracking again with new data
+                  }
+              } */
         }
     }
 }
@@ -166,20 +169,24 @@ mod test {
         let mut acquisition_results: Vec<Arc<Mutex<AcquisitionResult>>> = Vec::new();
         let mut tracking_results: Vec<Arc<Mutex<TrackingResult>>> = Vec::new();
         let mut stages_all: Vec<Arc<Mutex<ProcessStage>>> = Vec::new();
+        let mut nav_stats_all: Vec<Arc<Mutex<NavSyncStatus>>> = Vec::new();
         for i in 1..=PRN_SEARCH_ACQUISITION_TOTAL {
             let acq_result: AcquisitionResult = AcquisitionResult::new(i, f_sampling);
             acquisition_results.push(Arc::new(Mutex::new(acq_result)));
             let trk_result = TrackingResult::new(i);
             tracking_results.push(Arc::new(Mutex::new(trk_result)));
+            let nav_stat = NavSyncStatus::new();
+            nav_stats_all.push(Arc::new(Mutex::new(nav_stat)));
             stages_all.push(Arc::new(Mutex::new(ProcessStage::SignalAcquisition)));
         }
-        let mut cnt_all: Vec<Arc<Mutex<u64>>> = Vec::with_capacity(PRN_SEARCH_ACQUISITION_TOTAL);
+        let mut cnt_all: Vec<Arc<Mutex<usize>>> = Vec::with_capacity(PRN_SEARCH_ACQUISITION_TOTAL);
         (0..PRN_SEARCH_ACQUISITION_TOTAL).for_each(|_| cnt_all.push(Arc::new(Mutex::new(0))));
 
         let mut handlers = Vec::new();
         for i in 0..PRN_SEARCH_ACQUISITION_TOTAL {
             let acq_result_clone = Arc::clone(&acquisition_results[i]);
             let trk_result_clone = Arc::clone(&tracking_results[i]);
+            let nav_stat_clone = Arc::clone(&nav_stats_all[i]);
             let stage_clone = Arc::clone(&stages_all[i]);
             let stop_signal_clone = Arc::clone(&term);
             let cnt_each = Arc::clone(&cnt_all[i]);
@@ -190,6 +197,7 @@ mod test {
                     stage_clone,
                     acq_result_clone,
                     trk_result_clone,
+                    nav_stat_clone,
                     false,
                     cnt_each,
                     stop_signal_clone,

@@ -20,7 +20,7 @@ use acquisition::PRN_SEARCH_ACQUISITION_TOTAL;
 mod tracking;
 use tracking::TrackingResult;
 mod decoding;
-use decoding::nav_decoding;
+use decoding::{nav_decoding, NavSyncStatus};
 mod data_process;
 use crate::data_process::{do_data_process, ProcessStage};
 mod app_buffer_utilities;
@@ -81,19 +81,23 @@ fn main() -> Result<(), Error> {
     let mut acquisition_results: Vec<Arc<Mutex<AcquisitionResult>>> = Vec::new();
     let mut tracking_results: Vec<Arc<Mutex<TrackingResult>>> = Vec::new();
     let mut stages_all: Vec<Arc<Mutex<ProcessStage>>> = Vec::new();
+    let mut nav_stats_all: Vec<Arc<Mutex<NavSyncStatus>>> = Vec::new();
     for i in 1..=PRN_SEARCH_ACQUISITION_TOTAL {
         let acq_result: AcquisitionResult = AcquisitionResult::new(i, sampling_rate);
         acquisition_results.push(Arc::new(Mutex::new(acq_result)));
         let trk_result = TrackingResult::new(i);
         tracking_results.push(Arc::new(Mutex::new(trk_result)));
+        let nav_stat = NavSyncStatus::new();
+        nav_stats_all.push(Arc::new(Mutex::new(nav_stat)));
         stages_all.push(Arc::new(Mutex::new(ProcessStage::SignalAcquisition)));
     }
-    let mut cnt_all: Vec<Arc<Mutex<u64>>> = Vec::with_capacity(PRN_SEARCH_ACQUISITION_TOTAL);
+    let mut cnt_all: Vec<Arc<Mutex<usize>>> = Vec::with_capacity(PRN_SEARCH_ACQUISITION_TOTAL);
     (0..PRN_SEARCH_ACQUISITION_TOTAL).for_each(|_| cnt_all.push(Arc::new(Mutex::new(0))));
 
     for i in 0..PRN_SEARCH_ACQUISITION_TOTAL {
         let acq_result_clone = Arc::clone(&acquisition_results[i]);
         let trk_result_clone = Arc::clone(&tracking_results[i]);
+        let nav_stat_clone = Arc::clone(&nav_stats_all[i]);
         let stage_clone = Arc::clone(&stages_all[i]);
         let term_signal_clone = Arc::clone(&term);
         let cnt_each = Arc::clone(&cnt_all[i]);
@@ -107,6 +111,7 @@ fn main() -> Result<(), Error> {
                         stage_clone,
                         acq_result_clone,
                         trk_result_clone,
+                        nav_stat_clone,
                         false,
                         cnt_each,
                         term_signal_clone,

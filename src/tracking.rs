@@ -28,6 +28,8 @@ pub struct TrackingResult {
     pub q_early: f32,
     pub i_late: f32,
     pub q_late: f32,
+    pub old_i_prompt: f32,
+    pub old_q_prompt: f32,
     pub code_error: f32,
     pub code_error_filtered: f32,
     pub code_phase_error: f32,
@@ -36,6 +38,7 @@ pub struct TrackingResult {
     pub carrier_error_filtered: f32,
     pub carrier_phase_error: f32,
     pub carrier_freq: f32,
+    pub buff_location: u64,
 }
 
 impl TrackingResult {
@@ -48,6 +51,8 @@ impl TrackingResult {
             q_early: 0.0,
             i_late: 0.0,
             q_late: 0.0,
+            old_i_prompt: 0.0,
+            old_q_prompt: 0.0,
             code_error: 0.0,
             code_error_filtered: 0.0,
             code_phase_error: 0.0,
@@ -56,6 +61,7 @@ impl TrackingResult {
             carrier_error_filtered: 0.0,
             carrier_phase_error: 0.0,
             carrier_freq: 0.0,
+            buff_location: 0,
         }
     }
 }
