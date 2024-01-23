@@ -18,6 +18,7 @@ static DLL_SUM_CODE: f32 = 0.001;
 static PLL_GAIN: f32 = 0.25;
 static DLL_GAIN: f32 = 1.0;
 static EARLY_LATE_SPACE: f32 = 0.5;
+pub static LOOP_MS: usize = 10;
 
 #[derive(Clone, Debug)]
 pub struct TrackingResult {

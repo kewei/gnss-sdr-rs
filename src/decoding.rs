@@ -1,10 +1,10 @@
-use crate::gps_constants;
 use crate::tracking::TrackingResult;
+use crate::{gps_constants, tracking};
 use std::collections::VecDeque;
 use std::error::Error;
 use std::sync::{Arc, Mutex};
 
-const BIT_SYNC_THRESHOLD: usize = 30; //30 bits
+const BIT_SYNC_THRESHOLD: usize = 30;
 
 pub struct Pos {
     x: f32,
@@ -20,6 +20,9 @@ pub struct NavSyncStatus {
     flag_frame_sync: bool,
     frame_sync_ind: usize,
     sf_start_ind: usize,
+    bit_code_cnt: usize,
+    i_p: f32,
+    bit_sw: bool,
     preamble_ind: usize,
     buff_preamble: VecDeque<i8>,
     flag_tow_sync: bool,
@@ -41,6 +44,9 @@ impl NavSyncStatus {
             flag_frame_sync: false,
             frame_sync_ind: 0,
             sf_start_ind: 0,
+            bit_code_cnt: 0,
+            i_p: 0.0,
+            bit_sw: false,
             preamble_ind: 0,
             buff_preamble: VecDeque::with_capacity(
                 gps_constants::GPS_CA_PREAMBLE_LENGTH_SYMBOLS as usize,
@@ -75,6 +81,12 @@ pub fn nav_decoding(
         nav_sync_stat.flag_bit_sync = check_bit_sync(&mut nav_sync_stat, &trk_result);
     }
     if nav_sync_stat.flag_bit_sync {
+        bit_accumulation(
+            &mut nav_sync_stat,
+            cnt,
+            trk_result.i_prompt,
+            tracking::LOOP_MS,
+        );
         nav_sync_stat.preamble_ind = cnt;
         nav_sync_stat.tow_expected_ind = cnt
             + (gps_constants::GPS_WORD_BITS * gps_constants::GPS_CA_TELEMETRY_SYMBOLS_PER_BIT)
@@ -131,6 +143,18 @@ fn check_bit_sync(nav_stats: &mut NavSyncStatus, trk_result: &TrackingResult) ->
         }
     }
     false
+}
+
+fn bit_accumulation(nav_stats: &mut NavSyncStatus, cnt: usize, i_p: f32, loop_ms: usize) {
+    if nav_stats.biti == nav_stats.frame_sync_ind {
+        nav_stats.bit_code_cnt = 1;
+        nav_stats.i_p = i_p;
+    } else {
+        nav_stats.i_p += i_p;
+    }
+
+    nav_stats.bit_sw = nav_stats.bit_code_cnt % loop_ms == 0;
+    nav_stats.bit_code_cnt += 1;
 }
 
 fn check_preamble_syn(nav_sync_stat: &NavSyncStatus) -> bool {
