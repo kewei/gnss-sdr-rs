@@ -11,7 +11,7 @@ pub const GPS_L1_CA_BIT_PERIOD_MS: u16 = 20; // ms
 // Navigation message
 pub const GPS_CA_PREAMBLE: [i8; 8] = [1, -1, -1, -1, 1, -1, 1, 1];
 pub const GPS_CA_PREAMBLE_DURATION_S: f32 = 0.160;
-pub const GPS_CA_PREAMBLE_LENGTH_BITS: u16 = 8;
+pub const GPS_CA_PREAMBLE_LENGTH_BITS: u8 = 8;
 pub const GPS_CA_PREAMBLE_LENGTH_SYMBOLS: i16 = 160;
 pub const GPS_CA_PREAMBLE_DURATION_MS: u16 = 160;
 pub const GPS_CA_TELEMETRY_RATE_BITS_PER_S: u16 = 50;
