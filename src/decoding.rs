@@ -27,7 +27,7 @@ pub struct NavSyncStatus {
     sync_sw: bool,
     preamble_ind: usize,
     buff_preamble: VecDeque<i8>,
-    flag_tow_sync: bool,
+    polarity: i8,
     tow_expected_ind: usize,
     buff_tow: Vec<i8>,
     tow_bits: String,
@@ -53,9 +53,9 @@ impl NavSyncStatus {
             sync_sw: false,
             preamble_ind: 0,
             buff_preamble: VecDeque::with_capacity(
-                gps_constants::GPS_CA_PREAMBLE_LENGTH_SYMBOLS as usize,
+                gps_constants::GPS_CA_PREAMBLE_LENGTH_BITS as usize,
             ),
-            flag_tow_sync: false,
+            polarity: -1,
             tow_expected_ind: 0,
             buff_tow: Vec::with_capacity(
                 (gps_constants::GPS_WORD_BITS * gps_constants::GPS_CA_TELEMETRY_SYMBOLS_PER_BIT)
@@ -93,15 +93,14 @@ pub fn nav_decoding(
         );
     }
 
-    if !nav_sync_stat.flag_tow_sync
-        && nav_sync_stat.frame_bits.len() >= gps_constants::GPS_CA_PREAMBLE_LENGTH_BITS as usize
+    if !nav_sync_stat.flag_frame_sync
+        && nav_sync_stat.buff_preamble.len() == gps_constants::GPS_CA_PREAMBLE_LENGTH_BITS as usize
     {
-        check_preamble_syn(&nav_sync_stat);
+        nav_sync_stat.flag_frame_sync = check_preamble_syn(&mut nav_sync_stat);
     }
     nav_sync_stat.preamble_ind = cnt;
     nav_sync_stat.tow_expected_ind = cnt
         + (gps_constants::GPS_WORD_BITS * gps_constants::GPS_CA_TELEMETRY_SYMBOLS_PER_BIT) as usize;
-    nav_sync_stat.flag_frame_sync = check_preamble_syn(&nav_sync_stat);
     tlm_parity_check();
     if cnt >= nav_sync_stat.tow_expected_ind {
         nav_sync_stat.buff_tow.push(if i_p == 1 { 1 } else { 0 });
@@ -172,16 +171,23 @@ fn bit_accumulation(nav_stats: &mut NavSyncStatus, cnt: usize, i_p: f32, loop_ms
         let bit = if nav_stats.i_p > 0.0 { 1_i8 } else { -1_i8 };
         nav_stats.frame_bits.push(bit);
         nav_stats.sync_sw = true;
+        if !nav_stats.flag_frame_sync {
+            nav_stats.buff_preamble.push_back(bit);
+        }
     }
     nav_stats.bit_code_cnt += 1;
 }
 
-fn check_preamble_syn(nav_sync_stat: &NavSyncStatus) -> bool {
-    ((0..gps_constants::GPS_CA_PREAMBLE_LENGTH_SYMBOLS as usize).fold(0, |accu, x| {
-        accu + (nav_sync_stat.buff_preamble[x] * gps_constants::GPS_CA_PREAMBLE[x % 8]) as i16
-    }))
-    .abs()
-        == gps_constants::GPS_CA_PREAMBLE_LENGTH_SYMBOLS
+fn check_preamble_syn(nav_sync_stat: &mut NavSyncStatus) -> bool {
+    let corr = (0..gps_constants::GPS_CA_PREAMBLE_LENGTH_BITS as usize).fold(0, |accu, x| {
+        accu + (nav_sync_stat.buff_preamble[x] * gps_constants::GPS_CA_PREAMBLE[x % 8])
+    });
+    if corr.abs() == gps_constants::GPS_CA_PREAMBLE_LENGTH_BITS as i8 {
+        nav_sync_stat.polarity = corr.signum();
+        true
+    } else {
+        false
+    }
 }
 
 fn tlm_parity_check() {
