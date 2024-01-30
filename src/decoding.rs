@@ -28,6 +28,9 @@ pub struct NavSyncStatus {
     preamble_ind: usize,
     buff_preamble: VecDeque<i8>,
     polarity: i8,
+    sf_buffer_loc: usize,
+    sf_cnt: usize,
+    sf_start_biti: usize,
     tow_expected_ind: usize,
     buff_tow: Vec<i8>,
     tow_bits: String,
@@ -56,6 +59,9 @@ impl NavSyncStatus {
                 gps_constants::GPS_CA_PREAMBLE_LENGTH_BITS as usize,
             ),
             polarity: -1,
+            sf_buffer_loc: 0,
+            sf_cnt: 0,
+            sf_start_biti: 0,
             tow_expected_ind: 0,
             buff_tow: Vec::with_capacity(
                 (gps_constants::GPS_WORD_BITS * gps_constants::GPS_CA_TELEMETRY_SYMBOLS_PER_BIT)
@@ -68,6 +74,7 @@ impl NavSyncStatus {
 
 pub fn nav_decoding(
     tracking_result: Arc<Mutex<TrackingResult>>,
+    buff_loc: usize,
     cnt: usize,
     navigation_sync_state: Arc<Mutex<NavSyncStatus>>,
 ) -> Result<Pos, Box<dyn Error>> {
@@ -77,8 +84,6 @@ pub fn nav_decoding(
     let mut nav_sync_stat = navigation_sync_state
         .lock()
         .expect("Error in locking navigation_sync_status");
-    let i_p = trk_result.i_prompt.signum() as i8;
-    nav_sync_stat.buff_preamble.push_back(i_p);
     nav_sync_stat.biti = cnt % gps_constants::GPS_L1_CA_BIT_PERIOD_MS as usize;
     if !nav_sync_stat.flag_bit_sync && cnt > (1.0 / gps_constants::GPS_L1_CA_CODE_PERIOD_S) as usize
     {
@@ -93,46 +98,31 @@ pub fn nav_decoding(
         );
     }
 
-    if !nav_sync_stat.flag_frame_sync
-        && nav_sync_stat.buff_preamble.len() == gps_constants::GPS_CA_PREAMBLE_LENGTH_BITS as usize
-    {
-        nav_sync_stat.flag_frame_sync = check_preamble_syn(&mut nav_sync_stat);
-    }
-    nav_sync_stat.preamble_ind = cnt;
-    nav_sync_stat.tow_expected_ind = cnt
-        + (gps_constants::GPS_WORD_BITS * gps_constants::GPS_CA_TELEMETRY_SYMBOLS_PER_BIT) as usize;
-    tlm_parity_check();
-    if cnt >= nav_sync_stat.tow_expected_ind {
-        nav_sync_stat.buff_tow.push(if i_p == 1 { 1 } else { 0 });
-    }
-    if cnt + 1
-        == nav_sync_stat.tow_expected_ind
-            + (gps_constants::GPS_TOW_BITS * gps_constants::GPS_CA_TELEMETRY_SYMBOLS_PER_BIT)
-                as usize
-    {
-        for i in 0..gps_constants::GPS_TOW_BITS {
-            let sum_v =
-                nav_sync_stat.buff_tow[(i * gps_constants::GPS_CA_TELEMETRY_SYMBOLS_PER_BIT)
-                    as usize
-                    ..((i + 1) * gps_constants::GPS_CA_TELEMETRY_SYMBOLS_PER_BIT) as usize]
-                    .iter()
-                    .sum::<i8>();
-            if sum_v == gps_constants::GPS_CA_TELEMETRY_SYMBOLS_PER_BIT as i8 {
-                nav_sync_stat.tow_bits = nav_sync_stat.tow_bits.to_owned() + "1";
-            } else if sum_v == 0 {
-                nav_sync_stat.tow_bits = nav_sync_stat.tow_bits.to_owned() + "0";
-            } else {
-                nav_sync_stat.flag_bit_sync = false;
-                nav_sync_stat.buff_preamble.clear();
-            }
+    if nav_sync_stat.sync_sw {
+        if !nav_sync_stat.flag_frame_sync
+            && nav_sync_stat.buff_preamble.len()
+                == gps_constants::GPS_CA_PREAMBLE_LENGTH_BITS as usize
+        {
+            nav_sync_stat.flag_frame_sync = check_preamble_syn(&mut nav_sync_stat);
         }
-        let subframe_message = SubframeMessage {
-            tow: u32::from_str_radix(nav_sync_stat.tow_bits.as_str(), 2)
-                .expect("Error happens when parsing TOW bits to u32"),
-        };
+        if nav_sync_stat.flag_frame_sync {
+            nav_sync_stat.sf_buffer_loc = buff_loc;
+            nav_sync_stat.sf_cnt = cnt;
+            nav_sync_stat.sf_start_biti = nav_sync_stat.frame_bits.len()
+                - gps_constants::GPS_CA_PREAMBLE_LENGTH_BITS as usize;
+            nav_sync_stat.tow_expected_ind = cnt
+                + (gps_constants::GPS_WORD_BITS * gps_constants::GPS_CA_TELEMETRY_SYMBOLS_PER_BIT)
+                    as usize;
+        }
     }
-    how_parity_check();
 
+    if nav_sync_stat.flag_frame_sync && nav_sync_stat.sync_sw {
+        if nav_sync_stat.frame_bits.len() % gps_constants::GPS_SUBFRAME_BITS as usize == 0 {
+            let tlm_and_how_length = 2 * gps_constants::GPS_WORD_BITS as usize;
+            decode_subframe_message(&nav_sync_stat.frame_bits);
+            nav_sync_stat.frame_bits.clear();
+        }
+    }
     todo!();
 }
 
@@ -188,6 +178,29 @@ fn check_preamble_syn(nav_sync_stat: &mut NavSyncStatus) -> bool {
     } else {
         false
     }
+}
+
+fn decode_subframe_message(sf_bits: &[i8]) {
+    let word_length = gps_constants::GPS_WORD_BITS as usize;
+    decode_tlm(&sf_bits[0..word_length]);
+    decode_tow(&sf_bits[word_length..2 * word_length]);
+}
+
+fn decode_tlm(bits: &[i8]) -> SubframeMessage {
+    todo!()
+}
+fn decode_tow(bits: &[i8]) -> SubframeMessage {
+    let mut tow_bits = "".to_string();
+    for i in 0..gps_constants::GPS_TOW_BITS {
+        for i in 0..gps_constants::GPS_WORD_BITS as usize {
+            tow_bits += if bits[i] == 1 { "1" } else { "0" };
+        }
+    }
+    let subframe_message = SubframeMessage {
+        tow: u32::from_str_radix(tow_bits.as_str(), 2)
+            .expect("Error happens when parsing TOW bits to u32"),
+    };
+    subframe_message
 }
 
 fn tlm_parity_check() {

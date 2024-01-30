@@ -111,6 +111,7 @@ pub fn do_data_process(
                     *cnt += 1;
                     nav_decoding(
                         tracking_result_thread.clone(),
+                        buffer_location,
                         *cnt,
                         nav_stat_thread.clone(),
                     );
