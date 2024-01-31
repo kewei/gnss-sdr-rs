@@ -2,9 +2,19 @@ use crate::tracking::TrackingResult;
 use crate::{gps_constants, tracking};
 use std::collections::VecDeque;
 use std::error::Error;
+use std::fmt::{self, write};
 use std::sync::{Arc, Mutex};
 
 const BIT_SYNC_THRESHOLD: usize = 30;
+
+#[derive(Clone, Debug)]
+struct DecodingError;
+
+impl fmt::Display for DecodingError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "Error in decoding")
+    }
+}
 
 pub struct Pos {
     x: f32,
@@ -32,10 +42,12 @@ pub struct NavSyncStatus {
     sf_cnt: usize,
     sf_start_biti: usize,
     tow_expected_ind: usize,
+    buffer_loc_biti: Vec<usize>,
     buff_tow: Vec<i8>,
     tow_bits: String,
 }
 
+#[derive(Clone, Debug)]
 pub struct SubframeMessage {
     tow: u32,
 }
@@ -63,6 +75,7 @@ impl NavSyncStatus {
             sf_cnt: 0,
             sf_start_biti: 0,
             tow_expected_ind: 0,
+            buffer_loc_biti: Vec::new(),
             buff_tow: Vec::with_capacity(
                 (gps_constants::GPS_WORD_BITS * gps_constants::GPS_CA_TELEMETRY_SYMBOLS_PER_BIT)
                     as usize,
@@ -95,6 +108,7 @@ pub fn nav_decoding(
             cnt,
             trk_result.i_prompt,
             tracking::LOOP_MS,
+            buff_loc,
         );
     }
 
@@ -118,8 +132,11 @@ pub fn nav_decoding(
 
     if nav_sync_stat.flag_frame_sync && nav_sync_stat.sync_sw {
         if nav_sync_stat.frame_bits.len() % gps_constants::GPS_SUBFRAME_BITS as usize == 0 {
-            let tlm_and_how_length = 2 * gps_constants::GPS_WORD_BITS as usize;
-            decode_subframe_message(&nav_sync_stat.frame_bits);
+            if let Some(sf_msg) = decode_subframe_message(&nav_sync_stat.frame_bits) {
+                println!("{:?}", sf_msg);
+            } else {
+                println!("Parity check fails in decoding subframe");
+            }
             nav_sync_stat.frame_bits.clear();
         }
     }
@@ -144,7 +161,13 @@ fn check_bit_sync(nav_stats: &mut NavSyncStatus, trk_result: &TrackingResult) ->
     false
 }
 
-fn bit_accumulation(nav_stats: &mut NavSyncStatus, cnt: usize, i_p: f32, loop_ms: usize) {
+fn bit_accumulation(
+    nav_stats: &mut NavSyncStatus,
+    cnt: usize,
+    i_p: f32,
+    loop_ms: usize,
+    buff_loc: usize,
+) {
     nav_stats.sync_sw = false;
     if nav_stats.biti == nav_stats.frame_sync_ind {
         nav_stats.bit_code_cnt = 1;
@@ -160,6 +183,7 @@ fn bit_accumulation(nav_stats: &mut NavSyncStatus, cnt: usize, i_p: f32, loop_ms
     {
         let bit = if nav_stats.i_p > 0.0 { 1_i8 } else { -1_i8 };
         nav_stats.frame_bits.push(bit);
+        nav_stats.buffer_loc_biti.push(buff_loc);
         nav_stats.sync_sw = true;
         if !nav_stats.flag_frame_sync {
             nav_stats.buff_preamble.push_back(bit);
@@ -180,10 +204,17 @@ fn check_preamble_syn(nav_sync_stat: &mut NavSyncStatus) -> bool {
     }
 }
 
-fn decode_subframe_message(sf_bits: &[i8]) {
+fn decode_subframe_message(sf_bits: &[i8]) -> Option<SubframeMessage> {
     let word_length = gps_constants::GPS_WORD_BITS as usize;
+    if !parity_check(&sf_bits[0..word_length]) {
+        return None;
+    };
     decode_tlm(&sf_bits[0..word_length]);
-    decode_tow(&sf_bits[word_length..2 * word_length]);
+    if !parity_check(&sf_bits[word_length..2 * word_length]) {
+        return None;
+    };
+    let sf_msg = decode_tow(&sf_bits[word_length..2 * word_length]);
+    Some(sf_msg)
 }
 
 fn decode_tlm(bits: &[i8]) -> SubframeMessage {
@@ -203,10 +234,101 @@ fn decode_tow(bits: &[i8]) -> SubframeMessage {
     subframe_message
 }
 
-fn tlm_parity_check() {
-    todo!()
-}
+fn parity_check(bits: &[i8]) -> bool {
+    let mut parity_bits = Vec::with_capacity(6);
 
-fn how_parity_check() {
-    todo!()
+    parity_bits[0] = bits[0]
+        * bits[2]
+        * bits[3]
+        * bits[4]
+        * bits[6]
+        * bits[7]
+        * bits[11]
+        * bits[12]
+        * bits[13]
+        * bits[14]
+        * bits[15]
+        * bits[18]
+        * bits[19]
+        * bits[21]
+        * bits[24];
+    parity_bits[1] = bits[1]
+        * bits[3]
+        * bits[4]
+        * bits[5]
+        * bits[7]
+        * bits[8]
+        * bits[12]
+        * bits[13]
+        * bits[14]
+        * bits[15]
+        * bits[16]
+        * bits[19]
+        * bits[20]
+        * bits[22]
+        * bits[25];
+    parity_bits[2] = bits[0]
+        * bits[2]
+        * bits[4]
+        * bits[5]
+        * bits[6]
+        * bits[8]
+        * bits[9]
+        * bits[13]
+        * bits[14]
+        * bits[15]
+        * bits[16]
+        * bits[17]
+        * bits[20]
+        * bits[21]
+        * bits[23];
+    parity_bits[3] = bits[1]
+        * bits[3]
+        * bits[5]
+        * bits[6]
+        * bits[7]
+        * bits[9]
+        * bits[10]
+        * bits[14]
+        * bits[15]
+        * bits[16]
+        * bits[17]
+        * bits[18]
+        * bits[21]
+        * bits[22]
+        * bits[24];
+    parity_bits[4] = bits[1]
+        * bits[2]
+        * bits[4]
+        * bits[6]
+        * bits[7]
+        * bits[8]
+        * bits[10]
+        * bits[11]
+        * bits[15]
+        * bits[16]
+        * bits[17]
+        * bits[18]
+        * bits[19]
+        * bits[22]
+        * bits[23]
+        * bits[25];
+    parity_bits[5] = bits[0]
+        * bits[4]
+        * bits[6]
+        * bits[7]
+        * bits[9]
+        * bits[10]
+        * bits[11]
+        * bits[12]
+        * bits[14]
+        * bits[16]
+        * bits[20]
+        * bits[23]
+        * bits[24]
+        * bits[25];
+
+    let result: i8 = (0..6).map(|i| parity_bits[i] - bits[26 + i]).sum();
+
+    result == 0
 }
