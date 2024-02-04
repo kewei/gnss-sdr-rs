@@ -16,14 +16,14 @@ pub const APP_BUFFER_NUM: usize = 6000;
 
 pub struct AppBuffer {
     pub buff_cnt: usize,
-    pub app_buffer: SliceRB<u8>,
+    pub app_buffer: SliceRB<i8>,
 }
 
 impl AppBuffer {
     pub fn new() -> Self {
         Self {
             buff_cnt: 0,
-            app_buffer: SliceRB::<u8>::from_len(APP_BUFFER_NUM * 2 * BUFFER_SIZE),
+            app_buffer: SliceRB::<i8>::from_len(APP_BUFFER_NUM * 2 * BUFFER_SIZE),
         }
     }
 }
@@ -42,17 +42,18 @@ pub extern "C" fn callback_read_buffer(buff: Arc<*const c_uchar>, buff_len: c_ui
     // Copy data
     let data_ptr = Arc::as_ptr(&buff);
     let _data = unsafe { *data_ptr };
-    let data_slice: &[u8] = unsafe { slice::from_raw_parts(_data, 2 * BUFFER_SIZE) };
+    let data_slice1: &[u8] = unsafe { slice::from_raw_parts(_data, 2 * BUFFER_SIZE) };
+    let data_slice: Vec<i8> = data_slice1.iter().map(|&x| x as i8).collect();
 
     let cnt = app_buffer_clone_val.buff_cnt;
     app_buffer_clone_val
         .app_buffer
-        .write_latest(data_slice, (cnt * 2 * BUFFER_SIZE) as isize);
+        .write_latest(&data_slice[..], (cnt * 2 * BUFFER_SIZE) as isize);
     println!(
         "{:?}",
         (0..10)
             .map(|x| app_buffer_clone_val.app_buffer[x + app_buffer_clone_val.buff_cnt as isize])
-            .collect::<Vec<u8>>()
+            .collect::<Vec<i8>>()
     );
 
     // Increment buff_cnt

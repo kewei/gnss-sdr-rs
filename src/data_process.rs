@@ -144,13 +144,13 @@ mod test {
     use std::time::Instant;
     use tokio::runtime::Runtime;
 
-    #[tokio::test]
-    async fn test_data_process() {
+    #[test]
+    fn test_data_process() {
         use tokio::task;
         let t1: Instant = Instant::now();
-        let f_name = "src/test_data/GPS_recordings/gioveAandB_short.bin";
-        let f_sampling: f32 = 16.3676e6;
-        let f_inter_freq: f32 = 4.1304e6;
+        let f_name = "/home/kewei/Downloads/rtlsdr_l1/rtlsdr_l1.bin"; //"src/test_data/GPS_recordings/gioveAandB_short.bin";
+        let f_sampling: f32 = 2.048e6;
+        let f_inter_freq: f32 = 0e6;
 
         // Ctrl-C interruption
         let term = Arc::new(AtomicBool::new(true));
@@ -160,10 +160,16 @@ mod test {
             term_r.store(false, Ordering::SeqCst);
         })
         .expect("Error setting Ctrl-C handler");
+        let mut handlers = Vec::new();
 
-        task::spawn_blocking(move || read_data_file(f_name))
-            .await
-            .unwrap();
+        handlers.push(
+            thread::Builder::new()
+                .name("Device reader".to_string())
+                .spawn(move || {
+                    read_data_file(f_name);
+                })
+                .unwrap(),
+        );
 
         thread::sleep(Duration::from_millis(500));
 
@@ -183,7 +189,6 @@ mod test {
         let mut cnt_all: Vec<Arc<Mutex<usize>>> = Vec::with_capacity(PRN_SEARCH_ACQUISITION_TOTAL);
         (0..PRN_SEARCH_ACQUISITION_TOTAL).for_each(|_| cnt_all.push(Arc::new(Mutex::new(0))));
 
-        let mut handlers = Vec::new();
         for i in 0..PRN_SEARCH_ACQUISITION_TOTAL {
             let acq_result_clone = Arc::clone(&acquisition_results[i]);
             let trk_result_clone = Arc::clone(&tracking_results[i]);
@@ -191,23 +196,29 @@ mod test {
             let stage_clone = Arc::clone(&stages_all[i]);
             let stop_signal_clone = Arc::clone(&term);
             let cnt_each = Arc::clone(&cnt_all[i]);
-            handlers.push(task::spawn_blocking(move || {
-                do_data_process(
-                    f_sampling,
-                    f_inter_freq,
-                    stage_clone,
-                    acq_result_clone,
-                    trk_result_clone,
-                    nav_stat_clone,
-                    false,
-                    cnt_each,
-                    stop_signal_clone,
-                );
-            }));
+            handlers.push(
+                thread::Builder::new()
+                    .name(format!("PRN: {i}").to_string())
+                    .spawn(move || {
+                        do_data_process(
+                            f_sampling,
+                            f_inter_freq,
+                            stage_clone,
+                            acq_result_clone,
+                            trk_result_clone,
+                            nav_stat_clone,
+                            false,
+                            cnt_each,
+                            stop_signal_clone,
+                        );
+                    })
+                    .unwrap(),
+            );
         }
 
         for handle in handlers {
-            handle.await.unwrap();
+            handle.join().unwrap();
+            thread::sleep(Duration::from_millis(200));
         }
     }
 }

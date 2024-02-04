@@ -83,11 +83,17 @@ pub fn plot_samples(samples: &[f32]) {
 /// - f_name: file path
 pub fn read_data_file(f_name: &str) -> Result<()> {
     let f = File::open(f_name)?;
+    const data_type: usize = 0; // 0: real, 1: complex
     let mut buff_read = BufReader::new(f);
+    const buf_size: usize = if data_type == 0 {
+        BUFFER_SIZE
+    } else {
+        2 * BUFFER_SIZE
+    };
     let values1 = [0i32; BUFFER_SIZE];
-    let mut values2 = [0; BUFFER_SIZE];
+    let mut values2 = [0; buf_size];
     loop {
-        let mut values: Vec<u8> = Vec::with_capacity(2 * BUFFER_SIZE);
+        let mut values: Vec<i8> = Vec::with_capacity(2 * BUFFER_SIZE);
         if !(buff_read
             .fill_buf()
             .expect("Filling buffer has an error!")
@@ -96,13 +102,21 @@ pub fn read_data_file(f_name: &str) -> Result<()> {
             buff_read.read_exact(&mut values2[..])?;
         }
 
-        let t_v: Vec<(i32, i32)> = values2
-            .into_iter()
-            .map(|x| x as i32)
-            .zip(values1.into_iter())
-            .collect();
+        let mut t_v: Vec<(i32, i32)> = Vec::new();
+        if data_type == 0 {
+            t_v = values2
+                .into_iter()
+                .map(|x| x as i32)
+                .zip(values1.into_iter())
+                .collect();
+        } else {
+            t_v = values2
+                .chunks_exact(2)
+                .map(|x| (x[0] as i32, x[1] as i32))
+                .collect();
+        }
 
-        values = self_flatten(&t_v).iter().map(|&x| x as u8).collect();
+        values = self_flatten(&t_v).iter().map(|&x| x as i8).collect(); // Be careful!
 
         let app_buffer_clone = unsafe { Arc::clone(&APPBUFF) };
         let mut app_buffer_val = app_buffer_clone
@@ -113,9 +127,10 @@ pub fn read_data_file(f_name: &str) -> Result<()> {
         let cnt = app_buffer_val.buff_cnt % APP_BUFFER_NUM;
         app_buffer_val
             .app_buffer
-            .write_latest(&values, (cnt * 2 * BUFFER_SIZE) as isize);
+            .write_latest(&values[..], (cnt * 2 * BUFFER_SIZE) as isize);
 
         app_buffer_val.buff_cnt += 1;
+        println!("cnt: {}", app_buffer_val.buff_cnt);
 
         let five_ms = time::Duration::from_millis(5);
         thread::sleep(five_ms);
