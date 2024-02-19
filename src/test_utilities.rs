@@ -132,8 +132,10 @@ pub fn read_data_file(f_name: &str) -> Result<()> {
         app_buffer_val.buff_cnt += 1;
         println!("cnt: {}", app_buffer_val.buff_cnt);
 
-        let five_ms = time::Duration::from_millis(5);
-        thread::sleep(five_ms);
+        if app_buffer_val.buff_cnt % 30720 == 0 {
+            let one_thousand_ms = time::Duration::from_millis(1000);
+            thread::sleep(one_thousand_ms);
+        }
     }
 
     Ok(())

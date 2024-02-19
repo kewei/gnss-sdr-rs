@@ -8,19 +8,33 @@ use std::sync::{Arc, Mutex};
 const BIT_SYNC_THRESHOLD: usize = 30;
 
 #[derive(Clone, Debug)]
-struct DecodingError;
+struct DecodingError(String);
 
 impl fmt::Display for DecodingError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "Error in decoding")
+        write!(f, "{}", self.0)
     }
 }
 
+impl Error for DecodingError {}
+
+#[derive(Debug, Clone)]
 pub struct Pos {
     x: f32,
     y: f32,
     z: f32,
     t: f32,
+}
+
+impl Pos {
+    pub fn new() -> Self {
+        Self {
+            x: 0.0,
+            y: 0.0,
+            z: 0.0,
+            t: 0.0,
+        }
+    }
 }
 
 pub struct NavSyncStatus {
@@ -90,7 +104,7 @@ pub fn nav_decoding(
     buff_loc: usize,
     cnt: usize,
     navigation_sync_state: Arc<Mutex<NavSyncStatus>>,
-) -> Result<Pos, Box<dyn Error>> {
+) -> Result<SubframeMessage, Box<dyn Error>> {
     let trk_result = tracking_result
         .lock()
         .expect("Locking error in tracking_result in nav_decoding");
@@ -132,15 +146,19 @@ pub fn nav_decoding(
 
     if nav_sync_stat.flag_frame_sync && nav_sync_stat.sync_sw {
         if nav_sync_stat.frame_bits.len() % gps_constants::GPS_SUBFRAME_BITS as usize == 0 {
+            println!("Bits: {:?}", nav_sync_stat.frame_bits);
             if let Some(sf_msg) = decode_subframe_message(&nav_sync_stat.frame_bits) {
                 println!("{:?}", sf_msg);
+                return Ok(sf_msg);
             } else {
-                println!("Parity check fails in decoding subframe");
+                return Err(Box::new(DecodingError(
+                    "Parity check fails in decoding subframe".into(),
+                )));
             }
             nav_sync_stat.frame_bits.clear();
         }
     }
-    todo!();
+    Err(Box::new(DecodingError("Navigation decoding fails".into())))
 }
 
 fn check_bit_sync(nav_stats: &mut NavSyncStatus, trk_result: &TrackingResult) -> bool {
