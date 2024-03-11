@@ -3,6 +3,7 @@
 #![allow(non_snake_case)]
 #![allow(unused_variables)]
 
+use crossbeam_channel::{unbounded, Sender};
 use std::ffi::{c_uchar, c_uint, c_void, CString};
 use std::fmt::format;
 use std::io::Error;
@@ -27,7 +28,7 @@ mod app_buffer_utilities;
 mod gps_ca_prn;
 mod gps_constants;
 mod view;
-use view::NavigationView;
+use view::{data_view, NavigationView};
 mod rtlsdr_wrapper;
 mod test_utilities;
 use rtlsdr_wrapper::rtlsdr_dev_wrapper;
@@ -50,6 +51,8 @@ fn main() -> Result<(), Error> {
     let mut rtlsdr_dev_wrapper = rtlsdr_dev_wrapper::new();
     rtlsdr_dev_wrapper.open();
     rtlsdr_dev_wrapper.rtlsdr_config(frequency, sampling_rate as u32, gain, ppm_error);
+
+    let (m_sender, m_receiver) = unbounded::<NavigationView>();
 
     thread::sleep(time::Duration::from_millis(500));
 
@@ -84,7 +87,6 @@ fn main() -> Result<(), Error> {
     let mut tracking_results: Vec<Arc<Mutex<TrackingResult>>> = Vec::new();
     let mut stages_all: Vec<Arc<Mutex<ProcessStage>>> = Vec::new();
     let mut nav_stats_all: Vec<Arc<Mutex<NavSyncStatus>>> = Vec::new();
-    let mut nav_view_all: Vec<Arc<Mutex<NavigationView>>> = Vec::new();
     for i in 1..=PRN_SEARCH_ACQUISITION_TOTAL {
         let acq_result: AcquisitionResult = AcquisitionResult::new(i, sampling_rate);
         acquisition_results.push(Arc::new(Mutex::new(acq_result)));
@@ -94,8 +96,8 @@ fn main() -> Result<(), Error> {
         nav_stats_all.push(Arc::new(Mutex::new(nav_stat)));
         stages_all.push(Arc::new(Mutex::new(ProcessStage::SignalAcquisition)));
         let nav_view = NavigationView::new(i);
-        nav_view_all.push(Arc::new(Mutex::new(nav_view)));
     }
+
     let mut cnt_all: Vec<Arc<Mutex<usize>>> = Vec::with_capacity(PRN_SEARCH_ACQUISITION_TOTAL);
     (0..PRN_SEARCH_ACQUISITION_TOTAL).for_each(|_| cnt_all.push(Arc::new(Mutex::new(0))));
 
@@ -106,21 +108,22 @@ fn main() -> Result<(), Error> {
         let stage_clone = Arc::clone(&stages_all[i]);
         let term_signal_clone = Arc::clone(&term);
         let cnt_each = Arc::clone(&cnt_all[i]);
-        let nav_view = Arc::clone(&nav_view_all[i]);
+        let sender_clone = m_sender.clone();
         handlers.push(
             thread::Builder::new()
                 .name(format!("PRN: {i}").to_string())
                 .spawn(move || {
                     do_data_process(
+                        i,
                         sampling_rate,
                         freq_IF,
                         stage_clone,
                         acq_result_clone,
                         trk_result_clone,
                         nav_stat_clone,
-                        nav_view,
                         false,
                         cnt_each,
+                        sender_clone,
                         term_signal_clone,
                     );
                 })
@@ -128,9 +131,18 @@ fn main() -> Result<(), Error> {
         );
     }
 
+    handlers.push(
+        thread::Builder::new()
+            .name("Plotting thread".to_string())
+            .spawn(move || {
+                data_view(m_receiver);
+            })
+            .unwrap(),
+    );
+
     for handle in handlers {
         handle.join().unwrap();
-        thread::sleep(Duration::from_millis(200));
+        thread::sleep(Duration::from_millis(50));
     }
 
     Ok(())

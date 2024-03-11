@@ -4,6 +4,7 @@ use crate::decoding::{nav_decoding, NavSyncStatus};
 use crate::gps_constants;
 use crate::tracking::{do_track, TrackingResult};
 use crate::view::{self, NavigationView};
+use crossbeam_channel::Sender;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -19,15 +20,16 @@ pub enum ProcessStage {
 }
 
 pub fn do_data_process(
+    prn: usize,
     freq_sampling: f32,
     freq_IF: f32,
     stage_thread: Arc<Mutex<ProcessStage>>,
     acquisition_result_thread: Arc<Mutex<AcquisitionResult>>,
     tracking_result_thread: Arc<Mutex<TrackingResult>>,
     nav_stat_thread: Arc<Mutex<NavSyncStatus>>,
-    nav_view_thread: Arc<Mutex<NavigationView>>,
     is_complex: bool,
     cnt_each: Arc<Mutex<usize>>,
+    sender_thread: Sender<NavigationView>,
     term_signal: Arc<AtomicBool>,
 ) {
     let mut buffer_location = 0;
@@ -38,9 +40,7 @@ pub fn do_data_process(
         let mut stage = stage_thread_clone
             .lock()
             .expect("Error in locking 'ProcessStage' in thread");
-        let mut nav_view = nav_view_thread
-            .lock()
-            .expect("Error in locking NavigationView.");
+        let mut nav_view = NavigationView::new(prn);
 
         match *stage {
             ProcessStage::SignalAcquisition => {
@@ -117,6 +117,9 @@ pub fn do_data_process(
                         }
                         nav_view.trk_I_P.push_back(trk_result.i_prompt);
                         nav_view.trk_Q_P.push_back(trk_result.q_prompt);
+                        if *cnt % view::LENGTH_VIEW_DATA == 0 {
+                            sender_thread.send(nav_view).unwrap();
+                        }
                     } else {
                         println!("Tracking failed.");
                     };
@@ -150,6 +153,7 @@ mod test {
     use crate::test_utilities::plot_samples;
     use crate::test_utilities::read_data_file;
     use binrw::BinReaderExt;
+    use crossbeam_channel::unbounded;
     use std::fs::File;
     use std::io::Read;
     use std::thread;
@@ -164,6 +168,8 @@ mod test {
         let f_name = "/home/kewei/Downloads/rtlsdr_l1/rtlsdr_l1.bin"; //"src/test_data/GPS_recordings/gioveAandB_short.bin";
         let f_sampling: f32 = 2.048e6;
         let f_inter_freq: f32 = 0e6;
+
+        let (m_sender, m_receiver) = unbounded::<NavigationView>();
 
         // Ctrl-C interruption
         let term = Arc::new(AtomicBool::new(true));
@@ -190,7 +196,6 @@ mod test {
         let mut tracking_results: Vec<Arc<Mutex<TrackingResult>>> = Vec::new();
         let mut stages_all: Vec<Arc<Mutex<ProcessStage>>> = Vec::new();
         let mut nav_stats_all: Vec<Arc<Mutex<NavSyncStatus>>> = Vec::new();
-        let mut nav_view_all: Vec<Arc<Mutex<NavigationView>>> = Vec::new();
         for i in 1..=PRN_SEARCH_ACQUISITION_TOTAL {
             let acq_result: AcquisitionResult = AcquisitionResult::new(i, f_sampling);
             acquisition_results.push(Arc::new(Mutex::new(acq_result)));
@@ -200,7 +205,6 @@ mod test {
             nav_stats_all.push(Arc::new(Mutex::new(nav_stat)));
             stages_all.push(Arc::new(Mutex::new(ProcessStage::SignalAcquisition)));
             let nav_view = NavigationView::new(i);
-            nav_view_all.push(Arc::new(Mutex::new(nav_view)));
         }
         let mut cnt_all: Vec<Arc<Mutex<usize>>> = Vec::with_capacity(PRN_SEARCH_ACQUISITION_TOTAL);
         (0..PRN_SEARCH_ACQUISITION_TOTAL).for_each(|_| cnt_all.push(Arc::new(Mutex::new(0))));
@@ -212,21 +216,22 @@ mod test {
             let stage_clone = Arc::clone(&stages_all[i]);
             let stop_signal_clone = Arc::clone(&term);
             let cnt_each = Arc::clone(&cnt_all[i]);
-            let nav_view = Arc::clone(&nav_view_all[i]);
+            let sender_clone = m_sender.clone();
             handlers.push(
                 thread::Builder::new()
                     .name(format!("PRN: {i}").to_string())
                     .spawn(move || {
                         do_data_process(
+                            i,
                             f_sampling,
                             f_inter_freq,
                             stage_clone,
                             acq_result_clone,
                             trk_result_clone,
                             nav_stat_clone,
-                            nav_view,
                             false,
                             cnt_each,
+                            sender_clone,
                             stop_signal_clone,
                         );
                     })

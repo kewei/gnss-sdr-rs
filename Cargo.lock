@@ -1376,6 +1376,7 @@ dependencies = [
  "binrw",
  "byteorder",
  "chrono",
+ "crossbeam-channel",
  "ctrlc",
  "flate2",
  "itertools 0.12.0",
