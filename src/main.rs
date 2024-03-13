@@ -83,6 +83,15 @@ fn main() -> Result<(), Error> {
 
     thread::sleep(time::Duration::from_millis(500));
 
+    handlers.push(
+        thread::Builder::new()
+            .name("Plotting thread".to_string())
+            .spawn(move || {
+                data_view(m_receiver);
+            })
+            .unwrap(),
+    );
+
     let mut acquisition_results: Vec<Arc<Mutex<AcquisitionResult>>> = Vec::new();
     let mut tracking_results: Vec<Arc<Mutex<TrackingResult>>> = Vec::new();
     let mut stages_all: Vec<Arc<Mutex<ProcessStage>>> = Vec::new();
@@ -130,15 +139,6 @@ fn main() -> Result<(), Error> {
                 .unwrap(),
         );
     }
-
-    handlers.push(
-        thread::Builder::new()
-            .name("Plotting thread".to_string())
-            .spawn(move || {
-                data_view(m_receiver);
-            })
-            .unwrap(),
-    );
 
     for handle in handlers {
         handle.join().unwrap();
