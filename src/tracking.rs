@@ -177,7 +177,6 @@ pub fn do_track(
     trk_result.code_freq = code_freq;
 
     let buffer_loc = buffer_location + num_ca_code_samples;
-    println!("buffer location: {}", buffer_loc);
 
     Ok(buffer_loc)
 }

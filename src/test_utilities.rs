@@ -130,7 +130,7 @@ pub fn read_data_file(f_name: &str) -> Result<()> {
             .write_latest(&values[..], (cnt * 2 * BUFFER_SIZE) as isize);
 
         app_buffer_val.buff_cnt += 1;
-        println!("cnt: {}", app_buffer_val.buff_cnt);
+        // println!("cnt: {}", app_buffer_val.buff_cnt);
 
         if app_buffer_val.buff_cnt % 30720 == 0 {
             let one_thousand_ms = time::Duration::from_millis(1000);

@@ -55,11 +55,12 @@ pub fn do_data_process(
                         .expect("Error in locking after acquisition");
 
                     println!(
-                        "prn: {} freq: {} code_phase: {}",
-                        acq_result.prn, acq_result.carrier_freq, acq_result.code_phase
+                        "prn: {} freq: {} code_phase: {} mag_relative: {}",
+                        acq_result.prn,
+                        acq_result.carrier_freq,
+                        acq_result.code_phase,
+                        acq_result.mag_relative
                     );
-                    nav_view.prn = acq_result.prn;
-                    nav_view.acq_mag = acq_result.mag_relative;
 
                     *stage = ProcessStage::SignalTracking;
                 }
@@ -118,6 +119,11 @@ pub fn do_data_process(
                         nav_view.trk_I_P.push_back(trk_result.i_prompt);
                         nav_view.trk_Q_P.push_back(trk_result.q_prompt);
                         if *cnt % view::LENGTH_VIEW_DATA == 0 {
+                            let acq_result = acquisition_result_thread
+                                .lock()
+                                .expect("Error in locking in tracking");
+                            nav_view.prn = acq_result.prn;
+                            nav_view.acq_mag = acq_result.mag_relative;
                             sender_thread.send(nav_view).unwrap();
                         }
                     } else {
@@ -152,6 +158,7 @@ mod test {
     use crate::acquisition::{do_acquisition, PRN_SEARCH_ACQUISITION_TOTAL};
     use crate::test_utilities::plot_samples;
     use crate::test_utilities::read_data_file;
+    use crate::view::data_view;
     use binrw::BinReaderExt;
     use crossbeam_channel::unbounded;
     use std::fs::File;
@@ -191,6 +198,15 @@ mod test {
         );
 
         thread::sleep(Duration::from_millis(500));
+
+        handlers.push(
+            thread::Builder::new()
+                .name("Plotting thread".to_string())
+                .spawn(move || {
+                    data_view(m_receiver);
+                })
+                .unwrap(),
+        );
 
         let mut acquisition_results: Vec<Arc<Mutex<AcquisitionResult>>> = Vec::new();
         let mut tracking_results: Vec<Arc<Mutex<TrackingResult>>> = Vec::new();
