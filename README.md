@@ -2,6 +2,6 @@
 A Rust project for decoding GNSS signals, including GPS, Galileo, Beidou and GLONASS.
 
 
-This will be served as a lib crate to an Application of [AetherVanta](https://github.com/kewei/aethervanta/tree/main), and also a self-contained CLI tool.
+An Application [AetherVanta](https://github.com/kewei/aethervanta/tree/main) uses this lib to create a Tauri desktop App for GNSS AI integrity monitorying.
 
 Referring https://github.com/tomojitakasu/RTKLIB
