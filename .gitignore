@@ -1,0 +1,18 @@
+# Logs
+logs
+*.log
+
+*.local
+
+# Editor directories and files
+.vscode/*
+!.vscode/extensions.json
+.idea
+.DS_Store
+/target/
+/gen/schemas
+
+
+# Flamegraph
+*.data
+*.svg
