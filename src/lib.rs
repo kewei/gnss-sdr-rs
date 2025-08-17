@@ -4,3 +4,4 @@ pub mod fft;
 pub use crate::fft::{FFT, RealFFT};
 pub mod sdr_store;
 pub mod utils;
+pub mod sdr_mock;

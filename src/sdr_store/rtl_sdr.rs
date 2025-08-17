@@ -1,51 +1,39 @@
 use std::collections::HashMap;
-use soapysdr::{Device, Args};
+use soapysdr::{Args, Device, RxStream, StreamSample};
 use serde_json::{json, Value};
 use crate::sdr_store::sdr_wrapper::{SdrInfo, SdrConfig, SdrDevice, SdrError};
 use crate::utils::hashmap_to_args;
 
-pub struct RtlSdr {
-    pub device: Option<Device>,
+pub struct RtlSdr<D: SdrDevice> {
+    pub device: Option<D>,
     pub sdr_info: SdrInfo,
     pub sdr_config: SdrConfig,
 }
 
-impl RtlSdr {
+impl SdrDevice for RtlSdr<Device> {
     // Create a new RTL-SDR device with the given arguments
     // The `args` parameter is a string that contains all the
     // device arguments that are obtained from soapy_sdr::enumerate()
-    fn new(&mut self, args: Args) -> Result<Self, SdrError> {
+
+    fn new(args: Args) -> Result<Self, SdrError> {
         let mut args_map = HashMap::new();
         for (key, value) in args.iter() {
             args_map.insert(key.to_string(), value.to_string());
         }
-        let dev = Device::new(args).map_err(|e| SdrError::DeviceError(e.to_string()))?;
 
         let new_args = hashmap_to_args(args_map)
             .map_err(|e| SdrError::OtherError(e.to_string()))?;
-        let long_args = new_args.to_string();
-        let mut info: SdrInfo = Default::default();
-        let config: SdrConfig = Default::default();
-        info.long_args = Some(long_args);
-        info.tuner = new_args.get("tuner").map(|s| s.to_string());
-        info.manufacturer = new_args.get("manufacturer").map(|s| s.to_string());
-        info.model = new_args.get("model").map(|s| s.to_string());
-        info.serial_number = new_args.get("serial").map(|s| s.to_string());
-        info.driver = new_args.get("driver").map(|s| s.to_string());
-        info.label = new_args.get("label").map(|s| s.to_string());
-        info.description = new_args.get("description").map(|s| s.to_string());
-        info.version = new_args.get("version").map(|s| s.to_string());
-        info.product_name = new_args.get("product_name").map(|s| s.to_string());
-
+        let dev = SdrDevice::new(args)?;
+        let info = RtlSdr::map_args_to_info(new_args)?;
         Ok(Self {
             device: Some(dev),
             sdr_info: info,
-            sdr_config: config,
+            sdr_config: SdrConfig::default(),
         })
     }
 }
 
-impl SdrDevice for RtlSdr {
+impl RtlSdr<Device> {
 
     fn config(&mut self, config: Value) -> Result<(), String> {
         if let Some(c_freq) = config.get("center_frequency").and_then(Value::as_u64) {
@@ -78,23 +66,59 @@ impl SdrDevice for RtlSdr {
         Ok(())
     }
 
-    fn start_stream(&mut self) -> Result<(), String> {
-        // Implementation for starting the stream
+    fn start_rx_stream(&mut self, chnls: &[usize], time_ns: Option<i64>) -> Result<(), SdrError> {
+        // Implementation for starting the RX stream
+        if let Ok(mut rx_stream) = self.device.as_mut().unwrap().rx_stream::<u16>(chnls) {
+            rx_stream.activate(time_ns).map_err(|e| SdrError::StreamError(e.to_string()))?;
+        }
         Ok(())
     }
 
-    fn stop_stream(&mut self) -> Result<(), String> {
-        // Implementation for stopping the stream
+    fn stop_rx_stream(&mut self, chnls: &[usize], time_ns: Option<i64>) -> Result<(), SdrError> {
+        // Implementation for stopping the RX stream
+        if let Ok(mut rx_stream) = self.device.as_mut().unwrap().rx_stream::<u16>(chnls) {
+            rx_stream.deactivate(time_ns).map_err(|e| SdrError::StreamError(e.to_string()))?;
+        }
         Ok(())
     }
 
-    fn read_samples(&mut self, buf: &mut [i16]) -> Result<usize, String> {
+    fn read_samples(&mut self, buf: &mut [i16]) -> Result<usize, SdrError> {
         // Implementation for reading samples into the buffer
         Ok(buf.len())
     }
 
-    fn transmit_samples(&self, buf: &mut [i16]) -> Result<(), String> {
+    fn transmit_samples(&self, buf: &mut [i16]) -> Result<(), SdrError> {
         // Implementation for transmitting samples
         Ok(())
     }
+}
+
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::sdr_mock::device_mock::MockDevice;
+
+    #[test]
+    fn test_rtl_sdr_driver() {
+        let args = Args::new();
+        let rtl_sdr = RtlSdr::<MockDevice>::new(args).expect("Failed to mock a RTL-SDR device");
+        assert!(rtl_sdr.sdr_info.long_args.is_none());
+        assert!(rtl_sdr.sdr_info.serial_number.is_none());
+        assert!(rtl_sdr.device.is_some());
+    }
+
+    #[test]
+    fn test_rtl_sdr_args() {
+        let args_str = "driver=rtlsdr, label=Generic RTL2832U OEM :: 00000001, manufacturer=Realtek, product=RTL2838UHIDIR, serial=00000001, tuner=Rafael Micro R820T";
+        let args = Args::from(args_str);
+        let rtl_sdr = RtlSdr::<MockDevice>::new(Args::from(args_str)).expect("Failed to mock a RTL-SDR device");
+        assert!(rtl_sdr.sdr_info.serial_number == Some("00000001".to_string()));
+        assert!(rtl_sdr.sdr_info.tuner == Some("Rafael Micro R820T".to_string()));
+        assert!(rtl_sdr.sdr_info.manufacturer == Some("Realtek".to_string()));
+        assert!(rtl_sdr.sdr_info.product == Some("RTL2838UHIDIR".to_string()));
+        assert!(rtl_sdr.device.is_some());
+    }
+
 }

@@ -1,13 +1,13 @@
 extern crate bindgen;
-
 use std::env;
+use bindgen::CargoCallbacks;
 use std::path::PathBuf;
 
 fn main() {
-    if std::env::var("CARGO_PRIMARY_PACKAGE").is_err() {
-        println!("cargo:warning=Skipping build.rs because this is a dependency.");
-        return;
-    }
+    // if std::env::var("CARGO_PRIMARY_PACKAGE").is_err() {
+    //     println!("cargo:warning=Skipping build.rs because this is a dependency.");
+    //     return;
+    // }
     
     println!("cargo:rustc-link-search={}", "src/c_lib");
     println!("cargo:rustc-link-lib=convenience");
@@ -18,7 +18,7 @@ fn main() {
 
     let bindings = bindgen::Builder::default()
         .header("wrapper.h")
-        .parse_callbacks(Box::new(bindgen::CargoCallbacks))
+        .parse_callbacks(Box::new(CargoCallbacks::new()))
         .generate()
         .expect("Unable to generate bindings");
 

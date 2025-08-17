@@ -5,7 +5,7 @@ use serde::{Serialize, Deserialize};
 use serde_json::Value;
 use strum::IntoEnumIterator;
 use strum_macros::EnumIter;
-use soapysdr::Device;
+use soapysdr::{Args, Device, StreamSample};
 
 #[derive(Serialize, Deserialize, Debug, PartialEq, Eq, Hash, EnumIter)]
 pub enum DriverName {
@@ -29,7 +29,7 @@ pub struct SdrInfo {
     pub label: Option<String>,
     pub description: Option<String>,
     pub version: Option<String>,
-    pub product_name: Option<String>,
+    pub product: Option<String>,
 }
 
 
@@ -46,15 +46,53 @@ pub struct SdrConfig {
     pub extra_config: Option<HashMap<String, String>>, // Additional configuration options
 }
 
-
 pub trait SdrDevice {
-    fn config(&mut self, config: Value) -> Result<(), String>;
-    fn start_stream(&mut self) -> Result<(), String>;
-    fn stop_stream(&mut self) -> Result<(), String>;
-    fn read_samples(&mut self, buf: &mut [i16]) -> Result<usize, String>;
-    fn transmit_samples(&self, buf: &mut [i16]) -> Result<(), String>;
+    fn new(args: Args) -> Result<Self, SdrError>
+    where
+        Self: Sized;
+
+    fn map_args_to_info(args: Args) -> Result<SdrInfo, SdrError>
+    where 
+        Self: Sized {
+        let long_args = args.to_string();
+        let mut info  = SdrInfo::default();
+        info.long_args = Some(long_args);
+        info.tuner = args.get("tuner").map(|s| s.to_string());
+        info.manufacturer = args.get("manufacturer").map(|s| s.to_string());
+        info.model = args.get("model").map(|s| s.to_string());
+        info.serial_number = args.get("serial").map(|s| s.to_string());
+        info.driver = args.get("driver").map(|s| s.to_string());
+        info.label = args.get("label").map(|s| s.to_string());
+        info.product = args.get("product").map(|s| s.to_string());
+
+        Ok(info)
+    }
+
+    fn start_rx_stream(&mut self) -> Result<(), SdrError> {
+        Ok(())
+    }
+    fn start_tx_stream(&mut self) -> Result<(), SdrError> {
+        Ok(())
+    }
+    fn stop_rx_stream(&mut self) -> Result<(), SdrError> {
+        Ok(())
+    }
+    fn stop_tx_stream(&mut self) -> Result<(), SdrError> {
+        Ok(())
+    }
+    fn read_samples<T: StreamSample>(&mut self, buf: &mut [T]) -> Result<usize, SdrError> {
+        Ok(buf.len())
+    }
+    fn transmit_samples<T: StreamSample>(&self, buf: &mut [T]) -> Result<(), SdrError> {
+        Ok(())
+    }
 }
 
+impl SdrDevice for Device {
+    fn new(args: Args) -> Result<Self, SdrError> {
+        Device::new(args).map_err(|e| SdrError::DeviceError(e.to_string()))
+    }
+}
 
 #[derive(Debug)]
 pub enum SdrError {
