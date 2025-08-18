@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use soapysdr::{Args, Device, RxStream, StreamSample};
+use soapysdr::{Args, Device, RxStream, StreamSample, Direction};
 use serde_json::{json, Value};
 use crate::sdr_store::sdr_wrapper::{SdrInfo, SdrConfig, SdrDevice, SdrError};
 use crate::utils::hashmap_to_args;
@@ -36,55 +36,80 @@ impl SdrDevice for RtlSdr<Device> {
 impl RtlSdr<Device> {
 
     fn config(&mut self, config: Value) -> Result<(), String> {
-        if let Some(c_freq) = config.get("center_frequency").and_then(Value::as_u64) {
+        if let Some(c_freq) = config.get("center_frequency").and_then(Value::as_f64) {
+            self.device.as_ref().unwrap().set_frequency(Direction::Rx, 0, c_freq, Args::from(""))
+                .map_err(|e| format!("Failed to set center frequency: {}", e))?;
             self.sdr_config.center_frequency = c_freq;
         }
-        if let Some(s_rate) = config.get("sample_rate").and_then(Value::as_u64) {
-            self.sdr_config.sample_rate = s_rate as u32;
+
+        if let Some(s_rate) = config.get("sample_rate").and_then(Value::as_f64) {
+            self.device.as_ref().unwrap().set_sample_rate(Direction::Rx, 0, s_rate)
+                .map_err(|e| format!("Failed to set sample rate: {}", e))?;
+            self.sdr_config.sample_rate = s_rate;
         }
+
         if let Some(gain) = config.get("gain").and_then(Value::as_f64) {
-            self.sdr_config.gain = gain as f32;
+            self.device.as_ref().unwrap().set_gain(Direction::Rx, 0, gain)
+                .map_err(|e| format!("Failed to set gain: {}", e))?;
+            self.sdr_config.gain = gain;
         }
-        if let Some(freq_corr) = config.get("frequency_correction").and_then(Value::as_u64) {
-            self.sdr_config.frequency_correction = Some(freq_corr as u32);
+
+        if let Some(freq_corr) = config.get("frequency_correction").and_then(Value::as_f64) {
+            self.sdr_config.frequency_correction = Some(freq_corr);
         }
-        if let Some(bandwidth) = config.get("bandwidth").and_then(Value::as_u64) {
-            self.sdr_config.bandwidth = Some(bandwidth as u32);
-        }
-        if let Some(antenna) = config.get("antenna").and_then(Value::as_array) {
-            self.sdr_config.antenna = antenna.iter().filter_map(Value::as_str).map(String::from).collect();
-        }
+
+        if let Some(bandwidth) = config.get("bandwidth").and_then(Value::as_f64) {
+            self.device.as_ref().unwrap().set_bandwidth(Direction::Rx, 0, bandwidth)
+                .map_err(|e| format!("Failed to set bandwidth: {}", e))?;
+            self.sdr_config.bandwidth = Some(bandwidth);
+        }        
+
+        self.device.as_ref().unwrap().set_antenna(Direction::Rx, 0, "RX0")
+            .map_err(|e| format!("Failed to set antenna: {}", e))?;
+        self.sdr_config.antenna = vec!["RX0".to_string()];
+        
         if let Some(gain_mode) = config.get("gain_mode").and_then(Value::as_str) {
+            self.device.as_ref().unwrap().set_gain_mode(Direction::Rx, 0, true)
+                .map_err(|e| format!("Failed to set automatic gain mode: {}", e))?;
             self.sdr_config.gain_mode = Some(gain_mode.to_string());
         }
         else {
+            self.device.as_ref().unwrap().set_gain_mode(Direction::Rx, 0, false)
+                .map_err(|e| format!("Failed to set manual gain mode: {}", e))?;
             self.sdr_config.gain_mode = Some("manual".to_string());
         }
+
         if let Some(pps_enabled) = config.get("pps_enabled").and_then(Value::as_bool) {
             self.sdr_config.pps_enabled = pps_enabled;
         }
+
         Ok(())
     }
 
     fn start_rx_stream(&mut self, chnls: &[usize], time_ns: Option<i64>) -> Result<(), SdrError> {
         // Implementation for starting the RX stream
-        if let Ok(mut rx_stream) = self.device.as_mut().unwrap().rx_stream::<u16>(chnls) {
-            rx_stream.activate(time_ns).map_err(|e| SdrError::StreamError(e.to_string()))?;
+        if self.device.is_none() {
+            return Err(SdrError::DeviceError("Device not initialized".to_string()));
         }
         Ok(())
     }
 
     fn stop_rx_stream(&mut self, chnls: &[usize], time_ns: Option<i64>) -> Result<(), SdrError> {
         // Implementation for stopping the RX stream
-        if let Ok(mut rx_stream) = self.device.as_mut().unwrap().rx_stream::<u16>(chnls) {
-            rx_stream.deactivate(time_ns).map_err(|e| SdrError::StreamError(e.to_string()))?;
-        }
         Ok(())
     }
 
     fn read_samples(&mut self, buf: &mut [i16]) -> Result<usize, SdrError> {
-        // Implementation for reading samples into the buffer
-        Ok(buf.len())
+        // Implementation for reading samples into the buffer, rtl-sdr only has one RX channel
+        let mut rx_stream = self.device.as_mut().unwrap().rx_stream::<i16>(&[0]).map_err(|e| SdrError::StreamError(e.to_string()))?; 
+        rx_stream.activate(None).map_err(|e| SdrError::StreamError(e.to_string()));
+        
+        let n_samples = rx_stream.read(&mut [&mut buf[..]], 1000000).map_err(|e| SdrError::StreamError(e.to_string()));
+        
+        match n_samples {
+            Ok(n_samples) => Ok(n_samples),
+            Err(e) => Err(SdrError::SampleReadError(format!("Failed to read samples: {}", e)))
+        }
     }
 
     fn transmit_samples(&self, buf: &mut [i16]) -> Result<(), SdrError> {

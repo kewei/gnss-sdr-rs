@@ -6,6 +6,7 @@ use serde_json::Value;
 use strum::IntoEnumIterator;
 use strum_macros::EnumIter;
 use soapysdr::{Args, Device, StreamSample};
+use crate::sdr_store::rtl_sdr::RtlSdr;
 
 #[derive(Serialize, Deserialize, Debug, PartialEq, Eq, Hash, EnumIter)]
 pub enum DriverName {
@@ -35,18 +36,18 @@ pub struct SdrInfo {
 
 #[derive(Debug, Clone, Default)]
 pub struct SdrConfig {
-    pub center_frequency: u64, // Center frequency in Hz
-    pub sample_rate: u32, // Sample rate in Hz
-    pub gain: f32, // Gain in dB
-    pub frequency_correction: Option<u32>, // Frequency correction in ppm
-    pub bandwidth: Option<u32>, // Bandwidth in Hz
+    pub center_frequency: f64, // Center frequency in Hz
+    pub sample_rate: f64, // Sample rate in Hz
+    pub gain: f64, // Gain in dB
+    pub frequency_correction: Option<f64>, // Frequency correction in ppm
+    pub bandwidth: Option<f64>, // Bandwidth in Hz
     pub antenna: Vec<String>, // Antenna
     pub gain_mode: Option<String>, // Gain mode (e.g., 'manual', 'agc')
     pub pps_enabled: bool, // PPS (Pulse Per Second) enabled
     pub extra_config: Option<HashMap<String, String>>, // Additional configuration options
 }
 
-pub trait SdrDevice {
+pub trait SdrDevice: Send + Sync {
     fn new(args: Args) -> Result<Self, SdrError>
     where
         Self: Sized;
@@ -80,17 +81,18 @@ pub trait SdrDevice {
     fn stop_tx_stream(&mut self) -> Result<(), SdrError> {
         Ok(())
     }
-    fn read_samples<T: StreamSample>(&mut self, buf: &mut [T]) -> Result<usize, SdrError> {
-        Ok(buf.len())
-    }
-    fn transmit_samples<T: StreamSample>(&self, buf: &mut [T]) -> Result<(), SdrError> {
-        Ok(())
-    }
 }
 
 impl SdrDevice for Device {
     fn new(args: Args) -> Result<Self, SdrError> {
         Device::new(args).map_err(|e| SdrError::DeviceError(e.to_string()))
+    }
+}
+
+pub fn create_device(sdr: DriverName, args: Args) -> Result<Box<dyn SdrDevice + Send>, SdrError> {
+    match sdr {
+        DriverName::RtlSdr => RtlSdr::<Device>::new(args).map(|dev| Box::new(dev) as Box<dyn SdrDevice + Send>),
+        _ => Err(SdrError::DeviceNotFound(format!("Driver not found: {:?}", sdr))),
     }
 }
 
