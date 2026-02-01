@@ -1,0 +1,17 @@
+device = "rtlsdr" # Options: "rtlsdr", "hackrf", "limesdr", "plutosdr", "airspy"
+
+[sdr]
+center_freq_hz = 1575420000
+sample_rate_hz = 2048000
+bandwidth_hz = 2048000
+gain_db = 40.0
+
+[rf]
+output_sample_rate_hz = 2048000
+enable_agc = true
+
+[pvt]
+enable = true
+
+[output]
+file_type = "json"
