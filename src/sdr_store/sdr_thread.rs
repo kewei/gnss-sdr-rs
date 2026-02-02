@@ -19,7 +19,7 @@ pub fn sdr_thread(dev: &mut impl SdrDeviceWrapper, prod: &mut HeapProd<Sample>) 
 
                 if pushed == 0 {
                     // Buffer is full, wait a bit
-                    std::thread::sleep(std::time::Duration::from_millis(50));
+                    std::thread::sleep(std::time::Duration::from_millis(10));
                 }
             } 
             

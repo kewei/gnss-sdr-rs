@@ -246,10 +246,10 @@ impl SdrDeviceWrapper for Device {
 //     }
 // }
 
-pub fn start_device_with_name(device_name: &str, args: Option<Args>) -> Result<impl SdrDeviceWrapper, SdrError> {
+pub fn start_device_with_name(device_name: String, args: Option<Args>) -> Result<impl SdrDeviceWrapper, SdrError> {
     let mut devs_args: Vec<Args> = Vec::new();
     let mut args = Args::new();
-    args.set("driver", device_name);
+    args.set("driver", device_name.clone());
     for dev in soapysdr::enumerate(args).map_err(|e| SdrError::OtherError(e.to_string()))? {
         devs_args.push(dev);
     }
@@ -262,7 +262,7 @@ pub fn start_device_with_name(device_name: &str, args: Option<Args>) -> Result<i
         }
         let first_dev_args = devs_args[0].iter();
 
-        match device_name {
+        match device_name.as_str() {
             "rtlsdr" => {
                 let rtl_sdr = RtlSdr::<Device>::new(first_dev_args.collect())?;
                 Ok(rtl_sdr)

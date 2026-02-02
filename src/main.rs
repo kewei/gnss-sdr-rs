@@ -152,14 +152,14 @@ use serde_json::json;
 use std::thread;
 mod stream;
 use crate::stream::samples_buffer::{create_samples_ring_buffer, SamplesRingBuffer, BUFFER_SIZE};
+use crate::stream::stream_thread::stream_thread;
 #[cfg(test)]
 mod sdr_mock;
 mod utils;
 mod sdr_store;
 use crate::sdr_store::sdr_wrapper::SdrDeviceWrapper;
 use crate::sdr_store::sdr_wrapper::start_device_with_name;
-mod sdr_thread;
-use crate::sdr_thread::sdr_thread;
+use crate::sdr_store::sdr_thread::sdr_thread;
 mod config;
 use crate::config::app_config::{AppConfig, APP_CONFIG_FILE};
 
@@ -170,13 +170,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let app_config = AppConfig::from_toml_file(APP_CONFIG_FILE)?;
     println!("Starting stream with device: {:?}", app_config.device);
 
-    let mut sdr_dev = start_device_with_name(app_config.device.as_str(), None)?;
+    let mut sdr_dev = start_device_with_name(app_config.device, None)?;
     sdr_dev.config(json!(&app_config.sdr))?;
 
     let samples_ring_buffer: SamplesRingBuffer = create_samples_ring_buffer(BUFFER_SIZE);
     thread::spawn(move || {
         sdr_thread(&mut sdr_dev, &mut samples_ring_buffer.producer);
-    });
+    }).join()?;
 
+    thread::spawn(move || {
+        stream_thread(&mut samples_ring_buffer.consumer);
+    }).join()?;
     Ok(())
 }
