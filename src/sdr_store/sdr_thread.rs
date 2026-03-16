@@ -1,13 +1,14 @@
 use crate::sdr_store::sdr_wrapper::SdrDeviceWrapper;
+use crate::sdr_store::sdr_wrapper::SdrError;
 use crate::stream::samples_buffer::Sample;
 use ringbuf::HeapProd;
 use ringbuf::traits::Producer;
 
-pub fn sdr_thread(dev: &mut impl SdrDeviceWrapper, prod: &mut HeapProd<Sample>) {
+pub fn sdr_thread(dev: &mut impl SdrDeviceWrapper, prod: &mut HeapProd<Sample>) -> Result<(), SdrError>{
     loop {
             let mut buf: [Sample; 4096] = Default::default();
             let mut buffers = [&mut buf[..]];
-            let n_samples = dev.read_samples(&mut buffers, 100000)?;
+            let n_samples = dev.read_samples(&mut buffers, 10000)?;
             if n_samples == 0 {
                 continue;
             }

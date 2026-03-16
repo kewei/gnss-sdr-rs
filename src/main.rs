@@ -150,9 +150,9 @@
 
 use serde_json::json;
 use std::thread;
-mod stream;
-use crate::stream::samples_buffer::{create_samples_ring_buffer, SamplesRingBuffer, BUFFER_SIZE};
-use crate::stream::stream_thread::stream_thread;
+mod rf;
+use crate::rf::samples_buffer::{create_samples_ring_buffer, SamplesRingBuffer, BUFFER_SIZE};
+use crate::rf::rf_thread::rf_thread;
 #[cfg(test)]
 mod sdr_mock;
 mod utils;
@@ -162,6 +162,7 @@ use crate::sdr_store::sdr_wrapper::start_device_with_name;
 use crate::sdr_store::sdr_thread::sdr_thread;
 mod config;
 use crate::config::app_config::{AppConfig, APP_CONFIG_FILE};
+mod utilities;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("----------- GNSS-SDR-RS started -------------");
@@ -173,13 +174,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut sdr_dev = start_device_with_name(app_config.device, None)?;
     sdr_dev.config(json!(&app_config.sdr))?;
 
-    let samples_ring_buffer: SamplesRingBuffer = create_samples_ring_buffer(BUFFER_SIZE);
+    let raw_ring_buffer: SamplesRingBuffer = create_samples_ring_buffer(BUFFER_SIZE);
+    let rf_ring_buffer: SamplesRingBuffer = create_samples_ring_buffer(BUFFER_SIZE);
     thread::spawn(move || {
-        sdr_thread(&mut sdr_dev, &mut samples_ring_buffer.producer);
+        sdr_thread(&mut sdr_dev, &mut raw_ring_buffer.producer);
     }).join()?;
 
     thread::spawn(move || {
-        stream_thread(&mut samples_ring_buffer.consumer);
+        rf_thread(&mut raw_ring_buffer.consumer, &mut rf_ring_buffer.producer);
     }).join()?;
     Ok(())
 }
