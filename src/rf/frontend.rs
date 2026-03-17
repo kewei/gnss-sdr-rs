@@ -1,5 +1,6 @@
 use num::Complex;
 use std::f32::consts::PI;
+use crate::utilities::nco_lut::NcoLut;
 
 struct DigitalFrontend {
     // NCO for frequency shifting
