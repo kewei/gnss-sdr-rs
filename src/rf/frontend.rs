@@ -1,58 +1,68 @@
+#![feature(portable_simd)]
+use std::simd::f32x8;
+use std::simd::usizex8;
+
 use num::Complex;
 use std::f32::consts::PI;
-use crate::utilities::nco_lut::NcoLut;
+use crate::utilities::{dc_remove::DcRemoverSimd, nco_lut::NcoLut};
 
 struct DigitalFrontend {
     // NCO for frequency shifting
-    nco_phase: f32,
-    nco_step: f32,
+    nco: NcoLut,
     // DC offset removal
-    dc_alpha: f32,
-    ds_bias: Complex<f32>,
+    dc_remove: DcRemoverSimd,
     // Resampling
     input_sample_rate: f64,
     output_sample_rate: f64,
-    resample_acc: f64,
-    last_sample: Complex<f32>,
 }
 
 impl DigitalFrontend {
     fn new(f_if: f32, fs_in: f64, fs_out: f64) -> Self {
+        let mut nco = NcoLut::new(f_if, fs_in as f32);
+        let mut dc_remove = DcRemoverSimd::new(0.001);
+
         DigitalFrontend {
-            nco_phase: 0.0,
-            nco_step: 2 * PI * f_if / fs_in as f32,
-            dc_alpha: 0.001,
-            ds_bias: Complex::new(0.0, 0.0),
+            nco,
+            dc_remove,
             input_sample_rate: fs_in,
             output_sample_rate: fs_out,
-            resample_acc: 0.0,
-            last_sample: Complex::new(0.0, 0.0),
         }
     }
 
-    pub fn process(&mut self, input: &[Complex<f32>], output: &mut Vec<Complex<f32>>) {
-        for &sample in input {
+
+    /// Process a block of samples in-place, using SIMD for performance, the input samples are in size 1024N
+    pub fn process_block(&mut self, input_re: &mut[f32], input_im: &mut[f32]) {
+        // Process 8 samples at a time using SIMD
+        for (re, im) in input_re.chunks_exact_mut(8).zip(input_im.chunks_exact_mut(8)) {
+            let mut re_v = f32x8::from_slice(re);
+            let mut im_v = f32x8::from_slice(im);
             // DC offset removal
-            self.ds_bias = self.ds_bias * (1.0 - self.dc_alpha) + sample * self.dc_alpha;
-            let dc_removed = sample - self.ds_bias;
-
-            // Frequency shift
-            let nco = Complex::from_polar(1.0, -self.nco_phase);
-            let shifted = dc_removed * nco;
-            self.nco_phase = (self.nco_phase + self.nco_step) % (2.0 * PI);
-
-            // Pulse blanking
-            // (Placeholder: Implement pulse blanking logic here, e.g., based on amplitude threshold)
-            !todo!("Implement pulse blanking logic");
-
-            // Resampling
-            self.resample_acc += self.output_sample_rate / self.input_sample_rate;
-            if self.resample_acc >= 1.0 {
-                output.push(shifted);
-                self.resample_acc -= 1.0;
+            let (dc_removed_re, dc_removed_im) = self.dc_remove.process_block(re_v, im_v);
+            re_v = dc_removed_re;
+            im_v = dc_removed_im;
+            
+            // Generate 8 indices for the LUT based on the current phase
+            let mut indices = [0usize; 8];
+            for i in 0..8 {
+                indices[i] = self.nco.phase_accumulator as usize % self.nco.lut_re.len();
+                self.nco.phase_accumulator = (self.nco.phase_accumulator + self.nco.phase_step) % self.nco.lut_size;
             }
-
-            self.last_sample = shifted;
+            /// A bit slower than gather, but hardware support for gather is not good, and this can be optimized by compiler to use SIMD load
+            // let cos_v = f32x8::from_array([self.lut_re[indices[0]], self.lut_re[indices[1]], self.lut_re[indices[2]], self.lut_re[indices[3]], self.lut_re[indices[4]], self.lut_re[indices[5]], self.lut_re[indices[6]], self.lut_re[indices[7]]]);
+            // let sin_v = f32x8::from_array([self.lut_im[indices[0]], self.lut_im[indices[1]], self.lut_im[indices[2]], self.lut_im[indices[3]], self.lut_im[indices[4]], self.lut_im[indices[5]], self.lut_im[indices[6]], self.lut_im[indices[7]]]);
+            let idx_v = usizex8::from_array(indices);
+            let cos_v = f32x8::gather_or_default(&self.lut_re, idx_v);
+            let sin_v = f32x8::gather_or_default(&self.lut_im, idx_v);
+            let (res_re, res_im) = mix_simd(re_v, im_v, cos_v, sin_v);
+            re.copy_from_slice(&res_re.to_array());
+            im.copy_from_slice(&res_im.to_array());
         }
+        
+        // Pulse blanking
+        // (Placeholder: Implement pulse blanking logic here, e.g., based on amplitude threshold)
+        todo!("Implement pulse blanking logic");
+
+        // Resampling
+
     }
 }
