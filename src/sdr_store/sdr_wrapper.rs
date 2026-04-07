@@ -50,10 +50,10 @@ pub struct SdrConfig {
     pub extra_config: Option<HashMap<String, String>>, // Additional configuration options
 }
 
-pub trait SdrDeviceWrapper: Send + Sync {
-    fn device(&self) -> Option<&Device>;
+pub trait SdrDeviceWrapper {
+    fn device(&self) -> Result<&Device, SdrError>;
 
-    fn device_mut(&mut self) -> Option<&mut Device>;
+    fn device_mut(&mut self) -> Result<&mut Device, SdrError>;
 
     fn get_config(&self) -> SdrConfig;
 
@@ -76,135 +76,125 @@ pub trait SdrDeviceWrapper: Send + Sync {
 
     /// List available antennas for the given direction and channel.
     fn antennas(&self, direction: Direction, channel: usize) -> Result<Vec<String>, SdrError> {
-        self.device().unwrap().antennas(direction, channel).map_err(|e| SdrError::OtherError(e.to_string()))
+        self.device()?.antennas(direction, channel).map_err(|e| SdrError::OtherError(e.to_string()))
     }
 
     /// Get the selected antenna for the given direction and channel.
     fn antenna(&self, direction: Direction, channel: usize) -> Result<String, SdrError> {
-        self.device().unwrap().antenna(direction, channel).map_err(|e| SdrError::OtherError(e.to_string()))
+        self.device()?.antenna(direction, channel).map_err(|e| SdrError::OtherError(e.to_string()))
     }
 
     /// Set the selected antenna for the given direction and channel.
     fn set_antenna(&self, direction: Direction, channel: usize, antenna: &str) -> Result<(), SdrError> {
-        self.device().unwrap().set_antenna(direction, channel, antenna).map_err(|e| SdrError::OtherError(e.to_string()))
+        self.device()?.set_antenna(direction, channel, antenna).map_err(|e| SdrError::OtherError(e.to_string()))
     }
 
     /// Get the baseband filter width of the chain in Hz
     fn bandwidth(&self, direction: Direction, channel: usize) -> Result<f64, SdrError> {
-        self.device().unwrap().bandwidth(direction, channel).map_err(|e| SdrError::OtherError(e.to_string()))
+        self.device()?.bandwidth(direction, channel).map_err(|e| SdrError::OtherError(e.to_string()))
     }
 
     /// Get the range of valid bandwidths for the given direction and channel.
     fn bandwidth_range(&self, direction: Direction, channel: usize) -> Result<Vec<Range>, SdrError> {
-        self.device().unwrap().bandwidth_range(direction, channel).map_err(|e| SdrError::OtherError(e.to_string()))
+        self.device()?.bandwidth_range(direction, channel).map_err(|e| SdrError::OtherError(e.to_string()))
     }
 
     /// Set the baseband filter width of the chain in Hz
     fn set_bandwidth(&self, direction: Direction, channel: usize, bandwidth: f64) -> Result<(), SdrError> {
-        self.device().unwrap().set_bandwidth(direction, channel, bandwidth).map_err(|e| SdrError::OtherError(e.to_string()))
+        self.device()?.set_bandwidth(direction, channel, bandwidth).map_err(|e| SdrError::OtherError(e.to_string()))
     }
 
     fn driver_key(&self) -> Result<String, SdrError> {
-        self.device().unwrap().driver_key().map_err(|e| SdrError::OtherError(e.to_string()))
+        self.device()?.driver_key().map_err(|e| SdrError::OtherError(e.to_string()))
     }
 
     /// Returns the down-conversion frequency in Hz.
     fn frequency(&self, direction: Direction, channel: usize) -> Result<f64, SdrError> {
-        self.device().unwrap().frequency(direction, channel).map_err(|e| SdrError::OtherError(e.to_string()))
+        self.device()?.frequency(direction, channel).map_err(|e| SdrError::OtherError(e.to_string()))
     }
 
     /// Get the range of valid frequencies for the given direction and channel.
     fn frequency_range(&self, direction: Direction, channel: usize) -> Result<Vec<Range>, SdrError> {
-        self.device().unwrap().frequency_range(direction, channel).map_err(|e| SdrError::OtherError(e.to_string()))
+        self.device()?.frequency_range(direction, channel).map_err(|e| SdrError::OtherError(e.to_string()))
     }
 
     /// Set the down-conversion frequency in Hz.
     fn set_frequency(&self, direction: Direction, channel: usize, frequency: f64) -> Result<(), SdrError> {
-        self.device().unwrap().set_frequency(direction, channel, frequency, Args::from("")).map_err(|e| SdrError::OtherError(e.to_string()))
+        self.device()?.set_frequency(direction, channel, frequency, Args::from("")).map_err(|e| SdrError::OtherError(e.to_string()))
     }
 
     /// Get the overall value of the gain elements in a chain in dB.
     fn gain(&self, direction: Direction, channel: usize) -> Result<f64, SdrError> {
-        self.device().unwrap().gain(direction, channel).map_err(|e| SdrError::OtherError(e.to_string()))
+        self.device()?.gain(direction, channel).map_err(|e| SdrError::OtherError(e.to_string()))
     }
 
     /// Get the range of valid gain values for the given direction and channel.
     fn gain_range(&self, direction: Direction, channel: usize) -> Result<Range, SdrError> {
-        self.device().unwrap().gain_range(direction, channel).map_err(|e| SdrError::OtherError(e.to_string()))
+        self.device()?.gain_range(direction, channel).map_err(|e| SdrError::OtherError(e.to_string()))
     }
 
     /// Set the overall amplification in a chain.
     fn set_gain(&self, direction: Direction, channel: usize, gain: f64) -> Result<(), SdrError> {
-        self.device().unwrap().set_gain(direction, channel, gain).map_err(|e| SdrError::OtherError(e.to_string()))
+        self.device()?.set_gain(direction, channel, gain).map_err(|e| SdrError::OtherError(e.to_string()))
     }
 
     /// Returns true if automatic gain control is enabled
     fn gain_mode(&self, direction: Direction, channel: usize) -> Result<bool, SdrError> {
-        self.device().unwrap().gain_mode(direction, channel).map_err(|e| SdrError::OtherError(e.to_string()))
+        self.device()?.gain_mode(direction, channel).map_err(|e| SdrError::OtherError(e.to_string()))
     }
 
     /// Enable or disable automatic gain control.
     fn set_gain_mode(&self, direction: Direction, channel: usize, automatic: bool) -> Result<(), SdrError> {
-        self.device().unwrap().set_gain_mode(direction, channel, automatic).map_err(|e| SdrError::OtherError(e.to_string()))
+        self.device()?.set_gain_mode(direction, channel, automatic).map_err(|e| SdrError::OtherError(e.to_string()))
     }
 
     /// Query a dictionary of available device information.
     /// This dictionary can any number of values like vendor name, product name, revisions, serials…
     /// This information can be displayed to the user to help identify the instantiated device.
     fn hardware_info(&self) -> Result<Args, SdrError> {
-        self.device().unwrap().hardware_info().map_err(|e| SdrError::OtherError(e.to_string()))
+        self.device()?.hardware_info().map_err(|e| SdrError::OtherError(e.to_string()))
     }
 
     /// List available tunable elements in the chain.
     /// Elements should be in order RF to baseband.
     fn list_frequencies(&self, direction: Direction, channel: usize) -> Result<Vec<String>, SdrError> {
-        let freqs = self.device().unwrap().list_frequencies(direction, channel).map_err(|e| SdrError::OtherError(e.to_string()))?;
+        let freqs = self.device()?.list_frequencies(direction, channel).map_err(|e| SdrError::OtherError(e.to_string()))?;
         Ok(freqs)
     }
 
     /// Get the number of channels for the given direction.
     fn num_channels(&self, direction: Direction) -> Result<usize, SdrError> {
-        self.device().unwrap().num_channels(direction).map_err(|e| SdrError::OtherError(e.to_string()))
+        self.device()?.num_channels(direction).map_err(|e| SdrError::OtherError(e.to_string()))
     }
 
     fn rx_stream(&self, channels: &[usize]) -> Result<RxStream<Complex32>, SdrError> {
-        self.device().unwrap().rx_stream(channels).map_err(|e| SdrError::OtherError(e.to_string()))
+        self.device()?.rx_stream(channels).map_err(|e| SdrError::OtherError(e.to_string()))
     }
 
     /// Get the baseband sample rate of the chain in samples per second.
     fn sample_rate(&self, direction: Direction, channel: usize) -> Result<f64, SdrError> {
-        self.device().unwrap().sample_rate(direction, channel).map_err(|e| SdrError::OtherError(e.to_string()))
+        self.device()?.sample_rate(direction, channel).map_err(|e| SdrError::OtherError(e.to_string()))
     }
 
     /// Get the range of valid sample rates for the given direction and channel.
     fn get_sample_rate_range(&self, direction: Direction, channel: usize) -> Result<Vec<Range>, SdrError> {
-        self.device().unwrap().get_sample_rate_range(direction, channel).map_err(|e| SdrError::OtherError(e.to_string()))
+        self.device()?.get_sample_rate_range(direction, channel).map_err(|e| SdrError::OtherError(e.to_string()))
     }
 
     /// Set the baseband sample rate of the chain in samples per second.
     fn set_sample_rate(&self, direction: Direction, channel: usize, sample_rate: f64) -> Result<(), SdrError> {
-        self.device().unwrap().set_sample_rate(direction, channel, sample_rate).map_err(|e| SdrError::OtherError(e.to_string()))
+        self.device()?.set_sample_rate(direction, channel, sample_rate).map_err(|e| SdrError::OtherError(e.to_string()))
     }
 
     fn tx_stream(&self, channels: &[usize]) -> Result<TxStream<Complex32>, SdrError> {
-        self.device().unwrap().tx_stream(channels).map_err(|e| SdrError::OtherError(e.to_string()))
+        self.device()?.tx_stream(channels).map_err(|e| SdrError::OtherError(e.to_string()))
     }
+
+    /// Get a mutable reference to the RxStream.
+    fn get_rx_stream_mute(&mut self) -> Option<&mut RxStream<Complex32>>;
 
     /// Set configuration options using key/value pairs.
-    fn config(&mut self, config: Value) -> Result<(), String>;
-
-    fn start_rx_stream(&mut self) -> Result<(), SdrError> {
-        Ok(())
-    }
-    fn start_tx_stream(&mut self) -> Result<(), SdrError> {
-        Ok(())
-    }
-    fn stop_rx_stream(&mut self) -> Result<(), SdrError> {
-        Ok(())
-    }
-    fn stop_tx_stream(&mut self) -> Result<(), SdrError> {
-        Ok(())
-    }
+    fn config(&mut self, config: Value) -> Result<(), SdrError>;
 
     /// Reading samples into the buffer
     fn read_samples(&mut self, buf: &mut [&mut [Complex32]], timeout_us: i64) -> Result<usize, SdrError>;
@@ -214,19 +204,19 @@ pub trait SdrDeviceWrapper: Send + Sync {
 }
 
 impl SdrDeviceWrapper for Device {
-    fn device(&self) -> Option<&Device> {
-        Some(self)
+    fn device(&self) -> Result<&Device, SdrError> {
+        Ok(self)
     }
 
-    fn device_mut(&mut self) -> Option<&mut Device> {
-        Some(self)
+    fn device_mut(&mut self) -> Result<&mut Device, SdrError> {
+        Ok(self)
     }
 
     fn get_config(&self) -> SdrConfig {
         SdrConfig::default()
     }
 
-    fn config(&mut self, config: Value) -> Result<(), String> {
+    fn config(&mut self, config: Value) -> Result<(), SdrError> {
         Ok(())
     }
 
@@ -237,6 +227,11 @@ impl SdrDeviceWrapper for Device {
     fn transmit_samples(&self, buf: &mut [&mut [Complex32]]) -> Result<(), SdrError> {
         Ok(())
     }
+
+    fn get_rx_stream_mute(&mut self) -> Option<&mut RxStream<Complex32>> {
+        None
+    }
+
 }
 
 // pub fn create_device(sdr: DriverName, args: Args) -> Result<Box<dyn SdrDevice + Send>, SdrError> {
@@ -285,15 +280,7 @@ pub enum SdrError {
 
 impl Display for SdrError {
     fn fmt(&self, f: &mut Formatter<'_>) -> FmtResult {
-        match self {
-            SdrError::DeviceNotFound(msg) => write!(f, "Device not found: {}", msg),
-            SdrError::DeviceError(msg) => write!(f, "Device error: {}", msg),
-            SdrError::ConfigError(msg) => write!(f, "Configuration error: {}", msg),
-            SdrError::StreamError(msg) => write!(f, "Stream error: {}", msg),
-            SdrError::SampleReadError(msg) => write!(f, "Sample read error: {}", msg),
-            SdrError::TransmitError(msg) => write!(f, "Transmit error: {}", msg),
-            SdrError::OtherError(msg) => write!(f, "Other error: {}", msg),
-        }
+        write!(f, "{:?}", self)
     }
 }
 

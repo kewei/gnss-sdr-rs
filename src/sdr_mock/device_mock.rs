@@ -13,19 +13,19 @@ pub struct MockDevice {
 }
 
 impl SdrDeviceWrapper for MockDevice {
-    fn device(&self) -> Option<&Device> {
-        self.device.as_ref()
+    fn device(&self) -> Result<&Device, SdrError> {
+        self.device.as_ref().ok_or(SdrError::DeviceNotFound("Device not found".into()))
     }
 
-    fn device_mut(&mut self) -> Option<&mut Device> {
-        self.device.as_mut()
+    fn device_mut(&mut self) -> Result<&mut Device, SdrError> {
+        self.device.as_mut().ok_or(SdrError::DeviceNotFound("Device not found".into()))
     }
 
     fn get_config(&self) -> SdrConfig {
         self.sdr_config.clone()
     }
 
-    fn config(&mut self, config: Value) -> Result<(), String> {
+    fn config(&mut self, config: Value) -> Result<(), SdrError> {
         Ok(())
     }
 
@@ -55,7 +55,9 @@ impl RtlSdr<MockDevice> {
         let dev = MockDevice::new(Args::from("")).map_err(|e| SdrError::DeviceError(e.to_string()))?;
         let info = MockDevice::map_args_to_info(args)?;
         Ok(Self {
-            device: Some(dev),
+            device: dev,
+            rx_stream: None,
+            tx_stream: None,
             sdr_info: info,
             sdr_config: SdrConfig::default(),
         })
