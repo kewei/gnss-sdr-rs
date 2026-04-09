@@ -151,7 +151,7 @@
 use serde_json::json;
 use std::thread;
 mod rf;
-use crate::rf::samples_buffer::{create_samples_ring_buffer, SamplesRingBuffer, BUFFER_SIZE};
+use crate::rf::samples_buffer::{BUFFER_SIZE, SampleComplex, SampleReal, SamplesRingBuffer, create_samples_ring_buffer};
 use crate::rf::rf_thread::rf_thread;
 #[cfg(test)]
 mod sdr_mock;
@@ -174,14 +174,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut sdr_dev = start_device_with_name(app_config.device, None)?;
     sdr_dev.config(json!(&app_config.sdr))?;
 
-    let raw_ring_buffer: SamplesRingBuffer = create_samples_ring_buffer(BUFFER_SIZE);
-    let rf_ring_buffer: SamplesRingBuffer = create_samples_ring_buffer(BUFFER_SIZE);
+    let raw_ring_buffer: SamplesRingBuffer = create_samples_ring_buffer::<SampleReal>(BUFFER_SIZE);
+    let rf_ring_buffer: SamplesRingBuffer = create_samples_ring_buffer::<SampleReal>(BUFFER_SIZE);
     thread::spawn(move || {
         sdr_thread(&mut sdr_dev, &mut raw_ring_buffer.producer);
     }).join()?;
 
     thread::spawn(move || {
-        rf_thread(&mut raw_ring_buffer.consumer, &mut rf_ring_buffer.producer);
+        rf_thread(&app_config.rfconfig, &sdr_dev.sample_rate_hz, &mut raw_ring_buffer.consumer, &mut rf_ring_buffer.producer);
     }).join()?;
     Ok(())
 }

@@ -3,9 +3,8 @@
 use num_complex::Complex;
 use std::f32::consts::PI;
 use std::simd::f32x8;
-use std::simd::simd_index_select;
 
-const LUT_SIZE: usize = 1024;
+const LUT_SIZE: usize = 2048;
 const LUT_MASK: usize = LUT_SIZE - 1;
 
 #[inline(always)]

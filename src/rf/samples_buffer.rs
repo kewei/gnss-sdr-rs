@@ -3,7 +3,7 @@ use num::complex::Complex;
 
 pub type SampleComplex = Complex<f32>;
 pub type SampleReal = f32;
-pub static BUFFER_SIZE: usize = 163840;
+pub static BUFFER_SIZE: usize = 327680;
 
 
 pub struct SamplesRingBuffer<T> {
