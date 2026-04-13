@@ -23,6 +23,7 @@ pub struct AcquisitionResult {
     pub mag_relative: f32,
     pub ca_code: Vec<i16>,
     pub ca_code_samples: Vec<i16>,
+    pub cn0: f32,
 }
 
 impl AcquisitionResult {
@@ -35,8 +36,15 @@ impl AcquisitionResult {
             mag_relative: 0.0,
             ca_code,
             ca_code_samples,
+            cn0: 0.0,
         }
     }
+}
+
+pub enum ChannelState {
+    Idle,
+    Acquiring,
+    Tracking,
 }
 
 pub fn do_acquisition(

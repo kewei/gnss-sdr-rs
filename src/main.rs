@@ -149,13 +149,13 @@
 // }
 
 use serde_json::json;
+use std::sync::Arc;
 use std::thread;
 mod rf;
 use crate::rf::samples_buffer::{BUFFER_SIZE, SampleComplex, SampleReal, SamplesRingBuffer, create_samples_ring_buffer};
 use crate::rf::rf_thread::rf_thread;
 #[cfg(test)]
 mod sdr_mock;
-mod utils;
 mod sdr_store;
 use crate::sdr_store::sdr_wrapper::SdrDeviceWrapper;
 use crate::sdr_store::sdr_wrapper::start_device_with_name;
@@ -163,6 +163,9 @@ use crate::sdr_store::sdr_thread::sdr_thread;
 mod config;
 use crate::config::app_config::{AppConfig, APP_CONFIG_FILE};
 mod utilities;
+use crate::utilities::multicast_ring_buffer::MulticastRingBuffer;
+mod acquisition;
+use crate::acquisition::acquisition::do_acquisition;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("----------- GNSS-SDR-RS started -------------");
@@ -176,12 +179,30 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let raw_ring_buffer: SamplesRingBuffer = create_samples_ring_buffer::<SampleReal>(BUFFER_SIZE);
     let rf_ring_buffer: SamplesRingBuffer = create_samples_ring_buffer::<SampleReal>(BUFFER_SIZE);
+    
+    /// We use a large buffer to store the samples from RF thread, and then the acquisition and tracking threads 
+    /// can read from it. Here only the RF thread will write to the buffer, and the acquisition and tracking threads 
+    /// will read from it, so we don't need to worry about concurrent write and read.
+    let multicast_buffer = Arc::new(MulticastRingBuffer::new(1 << 20));  // 1M samples
+    
     thread::spawn(move || {
         sdr_thread(&mut sdr_dev, &mut raw_ring_buffer.producer);
     }).join()?;
 
+    let rf_multicast_buffer_clone = Arc::clone(&multicast_buffer);
     thread::spawn(move || {
-        rf_thread(&app_config.rfconfig, &sdr_dev.sample_rate_hz, &mut raw_ring_buffer.consumer, &mut rf_ring_buffer.producer);
+        rf_thread(&app_config.rfconfig, &sdr_dev.sample_rate_hz, &mut raw_ring_buffer.consumer, rf_multicast_buffer_clone);
     }).join()?;
+
+    let acquisition_multicast_buffer_clone = Arc::clone(&multicast_buffer);
+    thread::spawn(move || {
+        do_acquisition(acquisition_multicast_buffer_clone);
+    }).join()?;
+
+    let trk_multicast_buffer_clone = Arc::clone(&multicast_buffer);
+    thread::spawn(move || {
+        do_tracking(trk_multicast_buffer_clone);
+    }).join()?;
+
     Ok(())
 }
