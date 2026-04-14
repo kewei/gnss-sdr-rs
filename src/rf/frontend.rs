@@ -2,7 +2,7 @@
 use std::simd::f32x8;
 use std::simd::usizex8;
 
-use crate::utilities::{dc_remove::DcRemoverSimd, nco_lut::NcoLut};
+use crate::rf::{dc_remove::DcRemoverSimd, nco_lut::NcoLut};
 use num::Complex;
 use std::f32::consts::PI;
 
