@@ -166,6 +166,7 @@ mod utilities;
 use crate::utilities::multicast_ring_buffer::MulticastRingBuffer;
 mod acquisition;
 use crate::acquisition::acquisition::do_acquisition;
+mod constants;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("----------- GNSS-SDR-RS started -------------");
