@@ -34,10 +34,12 @@ impl MulticastRingBuffer {
                 the buffer pointer with the ring buffer pointer. This way, we can avoid copying 
                 data and improve performance."
             );
-            if start + n <= self.buffer.len() {
+            let buffer_len = self.buffer.len();
+            
+            if start + n <= buffer_len {
                 std::ptr::copy_nonoverlapping(samples.as_ptr(), dest, n);
             } else {
-                let first_part = self.buffer.len() - start;
+                let first_part = buffer_len - start;
                 std::ptr::copy_nonoverlapping(samples.as_ptr(), dest, first_part);
                 std::ptr::copy_nonoverlapping(
                     samples.as_ptr().add(first_part),
@@ -54,7 +56,17 @@ impl MulticastRingBuffer {
         self.head.load(Ordering::Acquire)
     }
 
-    pub fn get_sample_at(&self, index: usize) -> Complex<f32> {
-        self.buffer[index & self.mask]
+    pub fn copy_to_slice(&self, start: usize, dest: &mut [Complex<f32>]) {
+        let n = dest.len();
+        let physical_start = start & self.mask;
+        let buffer_len = self.buffer.len();
+
+        if physical_start + n <= buffer_len {
+            dest.copy_from_slice(&self.buffer[physical_start..physical_start + n]);
+        } else {
+            let mid = buffer_len - physical_start;
+            dest[..mid].copy_from_slice(&self.buffer[physical_start..]);
+            dest[mid..].copy_from_slice(&self.buffer[..n - mid]);
+        }
     }
 }
