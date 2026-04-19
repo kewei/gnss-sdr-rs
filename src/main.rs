@@ -151,22 +151,15 @@
 use serde_json::json;
 use std::sync::Arc;
 use std::thread;
-mod rf;
 use crate::rf::samples_buffer::{BUFFER_SIZE, SampleComplex, SampleReal, SamplesRingBuffer, create_samples_ring_buffer};
 use crate::rf::rf_thread::rf_thread;
-#[cfg(test)]
-mod sdr_mock;
-mod sdr_store;
 use crate::sdr_store::sdr_wrapper::SdrDeviceWrapper;
 use crate::sdr_store::sdr_wrapper::start_device_with_name;
 use crate::sdr_store::sdr_thread::sdr_thread;
-mod config;
 use crate::config::app_config::{AppConfig, APP_CONFIG_FILE};
-mod utilities;
 use crate::utilities::multicast_ring_buffer::MulticastRingBuffer;
-mod acquisition;
 use crate::acquisition::acquisition::do_acquisition;
-mod constants;
+
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("----------- GNSS-SDR-RS started -------------");
@@ -197,7 +190,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let acquisition_multicast_buffer_clone = Arc::clone(&multicast_buffer);
     thread::spawn(move || {
-        do_acquisition(acquisition_multicast_buffer_clone);
+        do_acquisition(acquisition_multicast_buffer_clone, sdr_dev.sample_rate_hz);
     }).join()?;
 
     let trk_multicast_buffer_clone = Arc::clone(&multicast_buffer);

@@ -39,7 +39,7 @@ pub struct SdrInfo {
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct SdrConfig {
-    pub center_frequency_hz: f64, // Center frequency in Hz
+    pub center_frequency_hz: f32, // Center frequency in Hz
     pub sample_rate_hz: f32, // Sample rate in Hz
     pub gain_db: f32, // Gain in dB
     pub bandwidth_hz: f32, // Bandwidth in Hz

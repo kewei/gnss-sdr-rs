@@ -1,5 +1,5 @@
 use crate::sdr_store::sdr_wrapper::{SdrConfig, SdrDeviceWrapper, SdrError, SdrInfo};
-use crate::utils::hashmap_to_args;
+use crate::sdr_store::utils::hashmap_to_args;
 use rustfft::num_complex::Complex32;
 use serde_json::{Value, json};
 use soapysdr::{Args, Device, Direction, RxStream, TxStream};
@@ -35,7 +35,7 @@ impl SdrDeviceWrapper for RtlSdr<Device> {
                 .map_err(|e| {
                     SdrError::OtherError(format!("Failed to set center frequency: {}", e))
                 })?;
-            self.sdr_config.center_frequency_hz = c_freq;
+            self.sdr_config.center_frequency_hz = c_freq as f32;
             thread::sleep(time::Duration::from_millis(100));
         }
 

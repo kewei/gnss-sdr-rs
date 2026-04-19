@@ -3,7 +3,7 @@ use soapysdr::{Args, Device};
 use serde_json::Value;
 use rustfft::num_complex::Complex32;
 use crate::sdr_store::sdr_wrapper::{SdrInfo, SdrConfig, SdrDeviceWrapper, SdrError};
-use crate::utils::hashmap_to_args;
+use crate::sdr_store::utils::hashmap_to_args;
 use crate::sdr_store::rtl_sdr::RtlSdr;
 
 pub struct MockDevice {
@@ -35,6 +35,10 @@ impl SdrDeviceWrapper for MockDevice {
 
     fn transmit_samples(&self, buf: &mut [&mut [Complex32]]) -> Result<(), SdrError> {
         Ok(())
+    }
+
+    fn get_rx_stream_mute(&mut self) -> Option<&mut soapysdr::RxStream<Complex32>> {
+        None
     }
 }
 

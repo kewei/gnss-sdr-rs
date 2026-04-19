@@ -4,8 +4,8 @@ use num_complex::Complex;
 use std::f32::consts::PI;
 use std::simd::f32x8;
 
-const LUT_SIZE: usize = 2048;
-const LUT_MASK: usize = LUT_SIZE - 1;
+pub const LUT_SIZE: usize = 2048;
+pub const LUT_MASK: usize = LUT_SIZE - 1;
 
 #[inline(always)]
 pub fn mix_simd(samples_i: f32x8, samples_q: f32x8, lut_cos:f32x8, lut_sin:f32x8) -> (f32x8, f32x8) {
@@ -17,11 +17,11 @@ pub fn mix_simd(samples_i: f32x8, samples_q: f32x8, lut_cos:f32x8, lut_sin:f32x8
     (mixed_i, mixed_q)
 }
 
-struct NcoLut {
-    lut_re: [f32; LUT_SIZE],
-    lut_im: [f32; LUT_SIZE],
-    phase_accumulator: f32,
-    phase_step: f32,
+pub struct NcoLut {
+    pub lut_re: [f32; LUT_SIZE],
+    pub lut_im: [f32; LUT_SIZE],
+    pub phase_accumulator: f32,
+    pub phase_step: f32,
 }
 
 impl NcoLut {
