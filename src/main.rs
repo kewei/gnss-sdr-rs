@@ -171,8 +171,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut sdr_dev = start_device_with_name(app_config.device, None)?;
     sdr_dev.config(json!(&app_config.sdr))?;
 
-    let raw_ring_buffer: SamplesRingBuffer = create_samples_ring_buffer::<SampleReal>(BUFFER_SIZE);
-    let rf_ring_buffer: SamplesRingBuffer = create_samples_ring_buffer::<SampleReal>(BUFFER_SIZE);
+    let raw_ring_buffer: SamplesRingBuffer = create_samples_ring_buffer::<SampleComplex>(BUFFER_SIZE);
+    let rf_ring_buffer: SamplesRingBuffer = create_samples_ring_buffer::<SampleComplex>(BUFFER_SIZE);
     
     /// We use a large buffer to store the samples from RF thread, and then the acquisition and tracking threads 
     /// can read from it. Here only the RF thread will write to the buffer, and the acquisition and tracking threads 

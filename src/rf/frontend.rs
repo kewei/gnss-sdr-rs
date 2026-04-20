@@ -1,10 +1,7 @@
 use std::simd::f32x8;
 use std::simd::usizex8;
-
 use crate::rf::dc_remove::DcRemoverSimd;
 use crate::rf::nco_lut::{mix_simd, NcoLut, LUT_SIZE};
-use num::Complex;
-use std::f32::consts::PI;
 
 pub struct DigitalFrontend {
     // NCO for frequency shifting
@@ -18,8 +15,8 @@ pub struct DigitalFrontend {
 
 impl DigitalFrontend {
     pub fn new(f_if: f32, fs_in: f32, fs_out: f32) -> Self {
-        let mut nco = NcoLut::new(f_if, fs_in as f32);
-        let mut dc_remove = DcRemoverSimd::new(0.001);
+        let nco = NcoLut::new(f_if, fs_in as f32);
+        let dc_remove = DcRemoverSimd::new(0.001);
 
         DigitalFrontend {
             nco,
@@ -50,7 +47,7 @@ impl DigitalFrontend {
                 self.nco.phase_accumulator =
                     (self.nco.phase_accumulator + self.nco.phase_step) % LUT_SIZE as f32;
             }
-            /// A bit slower than gather, but hardware support for gather is not good, and this can be optimized by compiler to use SIMD load
+            // A bit slower than gather, but hardware support for gather is not good, and this can be optimized by compiler to use SIMD load
             // let cos_v = f32x8::from_array([self.lut_re[indices[0]], self.lut_re[indices[1]], self.lut_re[indices[2]], self.lut_re[indices[3]], self.lut_re[indices[4]], self.lut_re[indices[5]], self.lut_re[indices[6]], self.lut_re[indices[7]]]);
             // let sin_v = f32x8::from_array([self.lut_im[indices[0]], self.lut_im[indices[1]], self.lut_im[indices[2]], self.lut_im[indices[3]], self.lut_im[indices[4]], self.lut_im[indices[5]], self.lut_im[indices[6]], self.lut_im[indices[7]]]);
             let idx_v = usizex8::from_array(indices);
@@ -62,9 +59,7 @@ impl DigitalFrontend {
             out_b.copy_to_slice(&mut chunk[8..16]);
         }
 
-        // Pulse blanking
-        // (Placeholder: Implement pulse blanking logic here, e.g., based on amplitude threshold)
-        todo!("Implement pulse blanking logic");
+        // Pulse blanking, e.g., based on amplitude threshold)
 
         // Resampling
     }

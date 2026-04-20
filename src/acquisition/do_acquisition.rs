@@ -1,17 +1,19 @@
 use crate::acquisition::doppler_shift::{DopplerShiftTable, apply_doppler_shift};
+use crate::constants::gps_def_constants::{
+    GPS_L1_CA_CODE_LENGTH_CHIPS, GPS_L1_CA_CODE_RATE_CHIPS_PER_S,
+};
+use crate::tracking::do_tracking::TrackingManager;
 use crate::utilities::ca_code::generate_ca_code_samples;
 use crate::utilities::multicast_ring_buffer::MulticastRingBuffer;
-use crate::constants::gps_def_constants::{GPS_L1_CA_CODE_RATE_CHIPS_PER_S, GPS_L1_CA_CODE_LENGTH_CHIPS};
-use crate::tracking::tracking::TrackingManager;
 use num::Complex;
 use rayon::prelude::*;
 use rustfft::{Fft, FftPlanner};
-use std::sync::{Arc, Mutex, PoisonError};
-use std::fmt;
-use std::error::Error;
 use std::collections::HashSet;
+use std::error::Error;
+use std::fmt;
 use std::simd::f32x8;
 use std::simd::num::SimdFloat;
+use std::sync::{Arc, PoisonError, RwLock};
 
 const FFT_LENGTH_MS: u8 = 1;
 const FREQ_SEARCH_ACQUISITION_HZ: f32 = 14e3; // Hz
@@ -19,7 +21,7 @@ const FREQ_SEARCH_STEP_HZ: u16 = 500; // Hz
 pub const PRN_SEARCH_ACQUISITION_TOTAL: u8 = 32; // 32 PRN codes to search
 const LONG_SAMPLES_LENGTH: u8 = 11; // ms
 
-
+#[derive(Debug, Clone, PartialEq)]
 pub enum ChannelState {
     Idle,
     Acquiring,
@@ -27,17 +29,17 @@ pub enum ChannelState {
     Lost,
 }
 
-pub enum SearchMode{
-    ColdStart,  // No prior information, search all PRNs
-    WarmStart,  // Use last known active PRNs to prioritize search
-    SteadyState,  // After a fix, search rarely for new satellites
+pub enum SearchMode {
+    ColdStart,   // No prior information, search all PRNs
+    WarmStart,   // Use last known active PRNs to prioritize search
+    SteadyState, // After a fix, search rarely for new satellites
 }
 
-pub struct AcqController {
+pub struct AcquisitionManager {
     mode: SearchMode,
 }
 
-impl AcqController {
+impl AcquisitionManager {
     pub fn new() -> Self {
         Self {
             mode: SearchMode::ColdStart,
@@ -52,21 +54,22 @@ impl AcqController {
         };
     }
 
-    pub fn get_pacing_and_list(&self, active_prns: &HashSet<u8>) -> (u64, Vec<u8>) {
+    pub fn get_pacing_and_list(&self, active_prns: &HashSet<u8>) -> (u64, u32) {
         let (interval, search_size) = match self.mode {
             SearchMode::ColdStart => (500, PRN_SEARCH_ACQUISITION_TOTAL),
-            SearchMode::WarmStart => (1000, 8), 
-            SearchMode::SteadyState => (2000, 5), 
+            SearchMode::WarmStart => (1000, 8),
+            SearchMode::SteadyState => (2000, 5),
         };
 
         let mut candidates = (1..=PRN_SEARCH_ACQUISITION_TOTAL)
             .filter(|prn| !active_prns.contains(prn))
             .collect::<Vec<u8>>();
-
         candidates.truncate(search_size as usize);
 
-        (interval, candidates)
-    } 
+        let mask: u32 = candidates.iter().fold(0,|acc, x| acc | (1 << (x - 1)));
+
+        (interval, mask)
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -74,7 +77,7 @@ struct AcqError;
 
 impl fmt::Display for AcqError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "Error happens while doing signal acquisition!")
+        write!(f, "Acquisition Error!")
     }
 }
 
@@ -104,30 +107,6 @@ impl AcquisitionResult {
             mag_relative: 0.0,
             sample_global_index: 0,
         }
-    }
-}
-
-
-struct AcquisitionManager {
-    pub active_prns: Arc<Mutex<HashSet<u8>>>,
-    pub last_search_time: std::time::Instant,
-    pub acquisition_interval: u16,
-}
-
-impl AcquisitionManager {
-    pub fn new(acquisition_interval: u16) -> Self {
-        Self {
-            active_prns: Arc::new(Mutex::new(HashSet::new())),
-            last_search_time: std::time::Instant::now(),
-            acquisition_interval,
-        }
-    }
-    
-    pub fn get_search_list(&self) -> Result<Vec<u8>, AcqError> {
-        let active = self.active_prns.lock()?;
-        Ok((1..=PRN_SEARCH_ACQUISITION_TOTAL as u8)
-            .filter(|prn| !active.contains(prn))
-            .collect())
     }
 }
 
@@ -196,7 +175,8 @@ impl AcquisitionWorker {
         let mut best_code_phase: usize = 0;
         let mut power_results = vec![0.0; self.fft_size];
 
-        for doppler in ((-FREQ_SEARCH_ACQUISITION_HZ / 2.0) as usize..=(FREQ_SEARCH_ACQUISITION_HZ / 2.0) as usize)
+        for doppler in ((-FREQ_SEARCH_ACQUISITION_HZ / 2.0) as usize
+            ..=(FREQ_SEARCH_ACQUISITION_HZ / 2.0) as usize)
             .step_by(FREQ_SEARCH_STEP_HZ as usize)
         {
             apply_doppler_shift(
@@ -249,15 +229,14 @@ impl AcquisitionWorker {
     }
 }
 
-pub fn do_acquisition(
+pub fn run(
     multi_buffer: Arc<MulticastRingBuffer>,
     freq_sampling_hz: f32,
-    trk_manager: Arc<Mutex<TrackingManager>>
+    trk_manager: Arc<RwLock<TrackingManager>>,
 ) -> Result<(), AcqError> {
-    let manager = AcquisitionManager::new(500);
     let capacity = (FREQ_SEARCH_ACQUISITION_HZ as u16 / FREQ_SEARCH_STEP_HZ) as usize + 1;
-    let fft_size = (freq_sampling_hz / (GPS_L1_CA_CODE_RATE_CHIPS_PER_S
-            / GPS_L1_CA_CODE_LENGTH_CHIPS))
+    let fft_size = (freq_sampling_hz
+        / (GPS_L1_CA_CODE_RATE_CHIPS_PER_S / GPS_L1_CA_CODE_LENGTH_CHIPS))
         .round() as usize;
     let mut doppler_table = Vec::with_capacity(capacity);
     for i in 0..capacity {
@@ -270,7 +249,7 @@ pub fn do_acquisition(
         ));
     }
 
-    let mut acq_controller = AcqController::new();
+    let mut acq_manager = AcquisitionManager::new();
 
     let mut workers = (1..=PRN_SEARCH_ACQUISITION_TOTAL)
         .into_par_iter()
@@ -279,39 +258,45 @@ pub fn do_acquisition(
 
     let mut local_tail = 0;
     let mut chunk_samples = vec![Complex::new(0.0, 0.0); fft_size];
+    let mut last_run = std::time::Instant::now();
 
     loop {
-        let now = std::time::Instant::now();
-        // Acquisition interval: 500ms
-        if now.duration_since(manager.last_search_time).as_millis() < manager.acquisition_interval as u128 {
-            std::thread::sleep(std::time::Duration::from_millis(10));
+        let active_set_arc = trk_manager.read()?.active_prns.clone();
+        let active_set = active_set_arc.read()?.clone();
+
+        acq_manager.update_mode(active_set.len());
+        let (interval_ms, mask) = acq_manager.get_pacing_and_list(&active_set);
+
+        if last_run.elapsed().as_millis() < interval_ms as u128 {
+            std::thread::sleep(std::time::Duration::from_millis(50));
             continue;
         }
 
         let head = multi_buffer.get_head();
         if head >= fft_size {
-            let search_list = manager.get_search_list()?;
-
-            if search_list.is_empty() {
-                // All satellites are in tracking state, sleep long: 1s
-                std::thread::sleep(std::time::Duration::from_millis(1000));
-            }
 
             local_tail = head - fft_size;
             multi_buffer.copy_to_slice(local_tail, &mut chunk_samples);
-
             let results: Vec<AcquisitionResult> = workers
                 .par_iter_mut()
-                .filter_map(|worker| worker.search_satellite(&chunk_samples, &doppler_table, local_tail))
+                .enumerate()
+                .filter_map(|(i, worker)| {
+                    let prn = i as u8 + 1;
+                    if (mask >> (prn - 1)) & 1 == 1 {
+                        worker.search_satellite(&chunk_samples, &doppler_table, local_tail)
+                    } else {
+                        None
+                    }
+                })
                 .collect();
 
+            let mut trk = trk_manager.write()?;
             for result in results {
-                manager.active_prns.lock()?.insert(result.prn);
-                tracking_worker.spawn_tracking_thread(result);
+                // acq_manager.active_prns.lock()?.insert(result.prn);
+                trk.assign_tracking(result);
             }
 
-            manager.last_search_time = std::time::Instant::now();
-
+            last_run = std::time::Instant::now();
         } else {
             std::thread::sleep(std::time::Duration::from_millis(1));
         }

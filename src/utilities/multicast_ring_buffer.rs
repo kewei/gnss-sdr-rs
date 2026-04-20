@@ -28,12 +28,10 @@ impl MulticastRingBuffer {
             let ptr = self.buffer.as_ptr() as *mut Complex<f32>;
             let dest = ptr.add(start);
             
-            todo!(
-                "Can we use a more zero-copy approach to write samples to the buffer? 
-                For example, we can use a separate buffer to store the samples and then swap 
-                the buffer pointer with the ring buffer pointer. This way, we can avoid copying 
-                data and improve performance."
-            );
+            // Can we use a more zero-copy approach to write samples to the buffer? 
+            // For example, we can use a separate buffer to store the samples and then swap 
+            // the buffer pointer with the ring buffer pointer. This way, we can avoid copying 
+            // data and improve performance.
 
             let buffer_len = self.buffer.len();
             

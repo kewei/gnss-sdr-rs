@@ -1,10 +1,10 @@
 use crate::config::app_config::RfConfig;
 use crate::rf::frontend::DigitalFrontend;
-use crate::rf::samples_buffer::{SampleComplex, create_samples_ring_buffer};
+use crate::rf::samples_buffer::SampleComplex;
 use crate::utilities::multicast_ring_buffer::MulticastRingBuffer;
 use num_complex::Complex32;
 use ringbuf::traits::{Observer, Consumer};
-use ringbuf::{HeapCons, HeapProd};
+use ringbuf::HeapCons;
 use std::sync::Arc;
 
 static BLOCK_SIZE: usize = 2048;
@@ -14,7 +14,6 @@ fn rf_thread(
     input_sample_rate: &f32,
     sdr_consumer: &mut HeapCons<SampleComplex>,
     shared_ring_buffer: Arc<MulticastRingBuffer>,
-    rf_prod: &mut HeapProd<SampleComplex>,
 ) {
     // let mut buf = create_samples_ring_buffer::<SampleComplex>(8 * BLOCK_SIZE);
     let mut block = [SampleComplex::new(0.0, 0.0); BLOCK_SIZE];
@@ -39,7 +38,7 @@ fn rf_thread(
             if n_samples < BLOCK_SIZE {  // Hit the end of the buffer
                 sdr_consumer.pop_slice(&mut block[n_samples..]); // Then, fill it again
 
-                todo!("Is it costly to do prepare_block and post_process_block? Can we improve it?");
+                //Is it costly to do prepare_block and post_process_block? Can we improve it?
                 
                 let mut block_planar = prepare_block(&mut block, BLOCK_SIZE); // size: 2 * BLOCK_SIZE
                 frontend.process_block(&mut block_planar);
