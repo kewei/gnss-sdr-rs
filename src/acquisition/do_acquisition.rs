@@ -2,18 +2,19 @@ use crate::acquisition::doppler_shift::{DopplerShiftTable, apply_doppler_shift};
 use crate::constants::gps_def_constants::{
     GPS_L1_CA_CODE_LENGTH_CHIPS, GPS_L1_CA_CODE_RATE_CHIPS_PER_S,
 };
-use crate::tracking::do_tracking::TrackingManager;
+use crate::tracking::do_tracking::TrackingMessage;
 use crate::utilities::ca_code::generate_ca_code_samples;
 use crate::utilities::multicast_ring_buffer::MulticastRingBuffer;
 use num::Complex;
 use rayon::prelude::*;
 use rustfft::{Fft, FftPlanner};
+use crossbeam_channel::{Sender, Receiver};
 use std::collections::HashSet;
 use std::error::Error;
 use std::fmt;
 use std::simd::f32x8;
 use std::simd::num::SimdFloat;
-use std::sync::{Arc, PoisonError, RwLock};
+use std::sync::{Arc, PoisonError};
 
 const FFT_LENGTH_MS: u8 = 1;
 const FREQ_SEARCH_ACQUISITION_HZ: f32 = 14e3; // Hz
@@ -66,7 +67,7 @@ impl AcquisitionManager {
             .collect::<Vec<u8>>();
         candidates.truncate(search_size as usize);
 
-        let mask: u32 = candidates.iter().fold(0,|acc, x| acc | (1 << (x - 1)));
+        let mask: u32 = candidates.iter().fold(0, |acc, x| acc | (1 << (x - 1)));
 
         (interval, mask)
     }
@@ -94,6 +95,7 @@ pub struct AcquisitionResult {
     pub prn: u8,
     pub code_phase: usize,
     pub carrier_freq: f32,
+    pub fs: f32,
     pub mag_relative: f32,
     pub sample_global_index: usize,
 }
@@ -104,6 +106,7 @@ impl AcquisitionResult {
             prn,
             code_phase: 0,
             carrier_freq: 0.0,
+            fs: 0.0,
             mag_relative: 0.0,
             sample_global_index: 0,
         }
@@ -207,6 +210,7 @@ impl AcquisitionWorker {
                     prn: self.prn,
                     code_phase: best_code_phase,
                     carrier_freq: best_doper_freq,
+                    fs: self.freq_sampling_hz,
                     mag_relative: max_val,
                     sample_global_index: local_tail + best_code_phase,
                 });
@@ -232,7 +236,8 @@ impl AcquisitionWorker {
 pub fn run(
     multi_buffer: Arc<MulticastRingBuffer>,
     freq_sampling_hz: f32,
-    trk_manager: Arc<RwLock<TrackingManager>>,
+    to_tracking: Sender<AcquisitionResult>,
+    from_tracking: Receiver<TrackingMessage>,
 ) -> Result<(), AcqError> {
     let capacity = (FREQ_SEARCH_ACQUISITION_HZ as u16 / FREQ_SEARCH_STEP_HZ) as usize + 1;
     let fft_size = (freq_sampling_hz
@@ -249,6 +254,8 @@ pub fn run(
         ));
     }
 
+    let mut active_prns = HashSet::new();
+
     let mut acq_manager = AcquisitionManager::new();
 
     let mut workers = (1..=PRN_SEARCH_ACQUISITION_TOTAL)
@@ -261,11 +268,19 @@ pub fn run(
     let mut last_run = std::time::Instant::now();
 
     loop {
-        let active_set_arc = trk_manager.read()?.active_prns.clone();
-        let active_set = active_set_arc.read()?.clone();
+        while let Ok(msg) = from_tracking.try_recv() {
+            match msg {
+                TrackingMessage::SatelliteLost(prn) => {
+                    active_prns.remove(&prn);
+                }
+                TrackingMessage::SatelliteLocked(prn) => {
+                    active_prns.insert(prn);
+                }
+            }
+        }
 
-        acq_manager.update_mode(active_set.len());
-        let (interval_ms, mask) = acq_manager.get_pacing_and_list(&active_set);
+        acq_manager.update_mode(active_prns.len());
+        let (interval_ms, mask) = acq_manager.get_pacing_and_list(&active_prns);
 
         if last_run.elapsed().as_millis() < interval_ms as u128 {
             std::thread::sleep(std::time::Duration::from_millis(50));
@@ -274,7 +289,6 @@ pub fn run(
 
         let head = multi_buffer.get_head();
         if head >= fft_size {
-
             local_tail = head - fft_size;
             multi_buffer.copy_to_slice(local_tail, &mut chunk_samples);
             let results: Vec<AcquisitionResult> = workers
@@ -290,10 +304,11 @@ pub fn run(
                 })
                 .collect();
 
-            let mut trk = trk_manager.write()?;
             for result in results {
-                // acq_manager.active_prns.lock()?.insert(result.prn);
-                trk.assign_tracking(result);
+                let prn = result.prn;
+                if to_tracking.send(result).is_ok() {
+                    active_prns.insert(prn);
+                }
             }
 
             last_run = std::time::Instant::now();
