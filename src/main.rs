@@ -148,7 +148,10 @@
 //     Ok(())
 // }
 
+use gnss_sdr_rs::acquisition::do_acquisition::AcquisitionResult;
+use gnss_sdr_rs::tracking::do_tracking::{TrackingManager, TrackingMessage};
 use serde_json::json;
+use std::ops::Mul;
 use std::sync::Arc;
 use std::thread;
 use crate::rf::samples_buffer::{BUFFER_SIZE, SampleComplex, SampleReal, SamplesRingBuffer, create_samples_ring_buffer};
@@ -172,13 +175,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     sdr_dev.config(json!(&app_config.sdr))?;
 
     let raw_ring_buffer: SamplesRingBuffer = create_samples_ring_buffer::<SampleComplex>(BUFFER_SIZE);
-    let rf_ring_buffer: SamplesRingBuffer = create_samples_ring_buffer::<SampleComplex>(BUFFER_SIZE);
     
     /// We use a large buffer to store the samples from RF thread, and then the acquisition and tracking threads 
     /// can read from it. Here only the RF thread will write to the buffer, and the acquisition and tracking threads 
     /// will read from it, so we don't need to worry about concurrent write and read.
-    let multicast_buffer = Arc::new(MulticastRingBuffer::new(1 << 20));  // 1M samples
-    
+    let multicast_buffer: Arc<MulticastRingBuffer> = Arc::new(MulticastRingBuffer::new(1 << 20));  // 1M samples
+    let (tx_acq, rx_acq) = crossbeam::channel::unbounded::<AcquisitionResult>();
+    let (tx_trk, rx_trk) = crossbeam::channel::unbounded::<TrackingMessage>();
+
     thread::spawn(move || {
         sdr_thread(&mut sdr_dev, &mut raw_ring_buffer.producer);
     }).join()?;
@@ -190,10 +194,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let acquisition_multicast_buffer_clone = Arc::clone(&multicast_buffer);
     thread::spawn(move || {
-        do_acquisition(acquisition_multicast_buffer_clone, sdr_dev.sample_rate_hz);
+        do_acquisition.run(acquisition_multicast_buffer_clone, sdr_dev.sample_rate_hz, tx_acq, rx_trk);
     }).join()?;
 
     let trk_multicast_buffer_clone = Arc::clone(&multicast_buffer);
+    let trx_manager = TrackingManager::new(15, rx_acq, tx_trk);
     thread::spawn(move || {
         do_tracking(trk_multicast_buffer_clone);
     }).join()?;

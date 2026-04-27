@@ -127,7 +127,7 @@ impl TrackingChannel {
         let mut samples = vec![Complex::<f32>::new(0.0, 0.0); num_samples_per_code];
         buff.copy_to_slice(self.next_sample_index, &mut samples);
 
-        let (i_p, q_p, i_e, i_l) = self.early_late_correlate(&samples);
+        let (i_p, q_p, i_e, i_l) = self.early_late_correlation(&samples);
 
         let power = i_p * i_p + q_p * q_p;
 
@@ -151,7 +151,7 @@ impl TrackingChannel {
 
     }
 
-    pub fn early_late_correlate(&mut self, samples: &[Complex<f32>]) -> (f32, f32, f32, f32){
+    pub fn early_late_correlation(&mut self, samples: &[Complex<f32>]) -> (f32, f32, f32, f32){
         let n = samples.len();
 
         let mut local_samples: Vec<Complex<f32>> = vec![Complex::new(0.0, 0.0); n];
@@ -228,14 +228,6 @@ impl TrackingChannel {
     }
 }
 
-pub struct PllSecondOrderFilter {
-    // PLL filter state and parameters
-}
-
-pub struct DllSecondOrderFilter {
-    // DLL filter state and parameters
-}
-
 pub struct TrackingManager {
     pub channels: Vec<TrackingChannel>,
     pub acq_to_trk: Receiver<AcquisitionResult>,
@@ -264,5 +256,12 @@ impl TrackingManager {
                 let _ = self.trk_to_acq.send(msg);
             }
         });
+    }
+}
+
+pub fn run_tracking(multi_ring_buf: Arc<MulticastRingBuffer>, acq_to_trk: Receiver<AcquisitionResult>, trk_to_acq: Sender<TrackingMessage>) {
+    let mut manager = TrackingManager::new(15, acq_to_trk, trk_to_acq);
+    loop {
+        manager.process_channels(multi_ring_buf.clone());
     }
 }
