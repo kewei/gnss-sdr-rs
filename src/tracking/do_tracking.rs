@@ -1,18 +1,20 @@
 use crate::acquisition::do_acquisition::{AcquisitionResult, ChannelState};
-use crate::utilities::multicast_ring_buffer::MulticastRingBuffer;
-use crate::utilities::ca_code::generate_ca_code_samples;
-use crate::constants::gps_def_constants::GPS_L1_CA_CODE_RATE_CHIPS_PER_S;
 use crate::constants::gps_ca_constants::GPS_CA_CODE_32_PRN;
+use crate::constants::gps_def_constants::{
+    GPS_L1_CA_CODE_LENGTH_CHIPS, GPS_L1_CA_CODE_RATE_CHIPS_PER_S,
+};
+use crate::utilities::ca_code::generate_ca_code_samples;
+use crate::utilities::multicast_ring_buffer::MulticastRingBuffer;
+use crossbeam_channel::{Receiver, Sender};
+use num_complex::Complex32;
+use rayon::iter::{IntoParallelRefMutIterator, ParallelIterator};
+use std::error::Error;
 use std::f32::consts::PI;
 use std::sync::Arc;
-use std::error::Error;
 use std::sync::PoisonError;
-use crossbeam_channel::{Sender, Receiver};
-use num::complex::Complex;
-use rayon::iter::{IntoParallelRefMutIterator, ParallelIterator};
 
 const LOCK_THRESHOLD: f32 = 15.0;
-const MAX_LOST_EPOCHS: u32 = 20;  // ms 
+const MAX_LOST_EPOCHS: u32 = 20; // ms 
 
 #[derive(Debug, Clone)]
 pub struct TrackingError;
@@ -48,7 +50,11 @@ impl LoopFilter {
         let omega_n = bandwidth / 0.53;
         let tau1 = gain / (omega_n * omega_n);
         let tau2 = (2.0 * damping) / omega_n;
-        Self { tau1, tau2, state:0.0 }
+        Self {
+            tau1,
+            tau2,
+            state: 0.0,
+        }
     }
 
     pub fn update(&mut self, err: f32, dt: f32) -> f32 {
@@ -63,9 +69,12 @@ pub struct TrackingChannel {
     pub prn: u8,
     pub state: ChannelState,
     pub lost_counter: u32,
-    pub next_sample_index: usize,
-
     pub fs: f32,
+    pub next_sample_index: usize,
+    pub num_samples_per_code: usize,
+    pub ca_code_samples: Vec<i8>,
+    pub data_samples: Vec<Complex32>,
+
     pub carrier_freq: f32,
     pub carrier_phase: f32,
     pub code_phase: f32,
@@ -79,14 +88,19 @@ pub struct TrackingChannel {
 }
 
 impl TrackingChannel {
-    pub fn new(id: u8) -> Self{
+    pub fn new(id: u8, fs: f32) -> Self {
+        let num_ca_samples =
+            (fs / (GPS_L1_CA_CODE_RATE_CHIPS_PER_S / GPS_L1_CA_CODE_LENGTH_CHIPS)).round() as usize;
         Self {
             id,
             prn: 0,
             state: ChannelState::Idle,
             lost_counter: 0,
             next_sample_index: 0,
-            fs: 0.0,
+            num_samples_per_code: num_ca_samples,
+            ca_code_samples: vec![0; num_ca_samples],
+            data_samples: vec![Complex32::new(0.0, 0.0); num_ca_samples],
+            fs: fs,
             carrier_freq: 0.0,
             carrier_phase: 0.0,
             code_phase: 0.0,
@@ -99,6 +113,7 @@ impl TrackingChannel {
     }
 
     pub fn start(&mut self, result: AcquisitionResult) {
+        self.ca_code_samples = generate_ca_code_samples(result.prn, self.fs);
         self.prn = result.prn;
         self.carrier_freq = result.carrier_freq;
         self.code_phase = result.code_phase as f32;
@@ -110,69 +125,63 @@ impl TrackingChannel {
         self.state == ChannelState::Tracking(self.prn)
     }
 
-    pub fn update(&mut self, buff: Arc<MulticastRingBuffer>) -> Option<TrackingMessage>{
+    pub fn update(&mut self, buff: Arc<MulticastRingBuffer>) -> Option<TrackingMessage> {
         if self.state != ChannelState::Tracking(self.prn) {
             return None;
         }
 
-        let samples_ca_code = generate_ca_code_samples(self.prn, self.fs);
-        let num_samples_per_code = samples_ca_code.len();
-
         let head = buff.get_head();
 
-        if head < self.next_sample_index + num_samples_per_code {
+        if head < self.next_sample_index + self.num_samples_per_code {
             return None;
         }
 
-        let mut samples = vec![Complex::<f32>::new(0.0, 0.0); num_samples_per_code];
-        buff.copy_to_slice(self.next_sample_index, &mut samples);
+        // let mut samples = vec![Complex32::new(0.0, 0.0); self.num_samples_per_code];
+        buff.copy_to_slice(self.next_sample_index, &mut self.data_samples);
 
-        let (i_p, q_p, i_e, i_l) = self.early_late_correlation(&samples);
+        let (i_p, q_p, i_e, i_l) = self.early_late_correlation();
 
         let power = i_p * i_p + q_p * q_p;
 
         if power > LOCK_THRESHOLD {
             self.lost_counter = 0;
             self.run_loop_filters(i_p, q_p, i_e, i_l);
-            self.next_sample_index += num_samples_per_code;
+            self.next_sample_index += self.num_samples_per_code;
             None
-        }
-        else {
+        } else {
             self.lost_counter += 1;
             if self.lost_counter >= MAX_LOST_EPOCHS {
                 self.reset();
                 Some(TrackingMessage::SatelliteLost(self.prn))
-            }
-            else {
-                self.next_sample_index += num_samples_per_code;
+            } else {
+                self.next_sample_index += self.num_samples_per_code;
                 None
             }
         }
-
     }
 
-    pub fn early_late_correlation(&mut self, samples: &[Complex<f32>]) -> (f32, f32, f32, f32){
-        let n = samples.len();
-
-        let mut local_samples: Vec<Complex<f32>> = vec![Complex::new(0.0, 0.0); n];
-        for i in 0..n {
+    pub fn early_late_correlation(&mut self) -> (f32, f32, f32, f32) {
+        let mut local_samples = vec![Complex32::new(0.0, 0.0); self.num_samples_per_code];
+        for i in 0..self.num_samples_per_code {
             let phase = self.carrier_phase + (2.0 * PI * self.carrier_freq * (i as f32) / self.fs);
             let cos_p = phase.cos();
             let sin_p = -phase.sin();
 
-            local_samples[i] = samples[i] * Complex::new(cos_p, sin_p);
+            local_samples[i] = self.data_samples[i] * Complex32::new(cos_p, sin_p);
         }
 
-        self.carrier_phase = (self.carrier_phase + 2.0 * PI * self.carrier_freq * (n as f32 / self.fs)) % (2.0 * PI);
+        self.carrier_phase = (self.carrier_phase
+            + 2.0 * PI * self.carrier_freq * (self.num_samples_per_code as f32 / self.fs))
+            % (2.0 * PI);
 
         let mut i_p = 0.0_f32;
         let mut q_p = 0.0_f32;
         let mut i_e = 0.0_f32;
         let mut i_l = 0.0_f32;
 
-        let spacing = 0.5_f32;  // half-chip
+        let spacing = 0.5_f32; // half-chip
 
-        for i in 0..n {
+        for i in 0..self.num_samples_per_code {
             let chip_idx = (self.code_phase + (i as f32 * (self.code_rate / self.fs))) % 1023.0;
             let p_chip = self.get_ca_chip(chip_idx);
             let e_chip = self.get_ca_chip(chip_idx + spacing);
@@ -187,7 +196,7 @@ impl TrackingChannel {
         (i_p, q_p, i_e, i_l)
     }
 
-    pub fn get_ca_chip(&self, phase: f32) -> f32{
+    pub fn get_ca_chip(&self, phase: f32) -> f32 {
         let idx = (phase.floor() as usize) % 1023;
         GPS_CA_CODE_32_PRN[self.prn as usize][idx] as f32
     }
@@ -200,7 +209,7 @@ impl TrackingChannel {
         let freq_offset = self.pll_filter.update(pll_err, dt);
         self.carrier_freq += freq_offset;
 
-        let p_e = i_e.powi(2);  // Include q_e
+        let p_e = i_e.powi(2); // Include q_e
         let p_l = i_l.powi(2);
 
         let dll_err = if (p_e + p_l) != 0.0 {
@@ -215,16 +224,15 @@ impl TrackingChannel {
     }
 
     pub fn reset(&mut self) {
-            self.prn = 0;
-            self.state = ChannelState::Idle;
-            self. lost_counter = 0;
-            self.next_sample_index = 0;
-            self.fs =  0.0;
-            self.carrier_freq = 0.0;
-            self.code_phase = 0.0;
-            self.code_rate =  0.0;
-            self.i_prompt = 0.0;
-            self.q_prompt = 0.0;
+        self.prn = 0;
+        self.state = ChannelState::Idle;
+        self.lost_counter = 0;
+        self.next_sample_index = 0;
+        self.carrier_freq = 0.0;
+        self.code_phase = 0.0;
+        self.code_rate = 0.0;
+        self.i_prompt = 0.0;
+        self.q_prompt = 0.0;
     }
 }
 
@@ -235,9 +243,16 @@ pub struct TrackingManager {
 }
 
 impl TrackingManager {
-    pub fn new(num_chnls: usize, acq_to_trk: Receiver<AcquisitionResult>, trk_to_acq: Sender<TrackingMessage>) -> Self {
+    pub fn new(
+        num_chnls: usize,
+        acq_to_trk: Receiver<AcquisitionResult>,
+        trk_to_acq: Sender<TrackingMessage>,
+        fs: f32,
+    ) -> Self {
         Self {
-            channels: (1..num_chnls + 1).map(|prn| TrackingChannel::new(prn as u8 )).collect(),
+            channels: (1..num_chnls + 1)
+                .map(|prn| TrackingChannel::new(prn as u8, fs))
+                .collect(),
             acq_to_trk,
             trk_to_acq,
         }
@@ -245,8 +260,14 @@ impl TrackingManager {
 
     pub fn process_channels(&mut self, multi_ring_buf: Arc<MulticastRingBuffer>) {
         while let Ok(msg) = self.acq_to_trk.try_recv() {
-            if let Some(channel) = self.channels.iter_mut().find(|c| c.state == ChannelState::Idle) {
-                let _ = self.trk_to_acq.send(TrackingMessage::SatelliteLocked(msg.prn));
+            if let Some(channel) = self
+                .channels
+                .iter_mut()
+                .find(|c| c.state == ChannelState::Idle)
+            {
+                let _ = self
+                    .trk_to_acq
+                    .send(TrackingMessage::SatelliteLocked(msg.prn));
                 channel.start(msg);
             }
         }
@@ -257,11 +278,42 @@ impl TrackingManager {
             }
         });
     }
+
+    fn next_tracking_index(&self) -> usize {
+        self.channels
+            .iter()
+            .filter(|c| c.is_active())
+            .map(|c| c.next_sample_index + c.num_samples_per_code)
+            .min()
+            .unwrap_or(0)
+    }
 }
 
-pub fn run_tracking(multi_ring_buf: Arc<MulticastRingBuffer>, acq_to_trk: Receiver<AcquisitionResult>, trk_to_acq: Sender<TrackingMessage>) {
-    let mut manager = TrackingManager::new(15, acq_to_trk, trk_to_acq);
+pub fn run_tracking(
+    multi_ring_buf: Arc<MulticastRingBuffer>,
+    acq_to_trk: Receiver<AcquisitionResult>,
+    trk_to_acq: Sender<TrackingMessage>,
+    fs: f32,
+) {
+    let mut manager = TrackingManager::new(15, acq_to_trk, trk_to_acq, fs);
     loop {
-        manager.process_channels(multi_ring_buf.clone());
+        let mut curr_head = multi_ring_buf.get_head();
+        let mut required_idx = manager.next_tracking_index();
+        if curr_head < required_idx {
+            let mut head_guard = multi_ring_buf.notifier.lock()?;
+            while multi_ring_buf.get_head() < manager.next_tracking_index() {
+                head_guard = multi_ring_buf.condvar.wait(head_guard)?;
+            }
+            
+            curr_head = multi_ring_buf.get_head();
+            drop(head_guard);
+        }
+
+        while required_idx <= curr_head {
+            manager.process_channels(multi_ring_buf.clone());
+
+            required_idx = manager.next_tracking_index();
+            curr_head = multi_ring_buf.get_head();
+        }
     }
 }

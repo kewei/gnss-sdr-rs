@@ -1,10 +1,34 @@
-use num::complex::Complex;
+use num::complex::Complex32;
+use std::fmt;
+use std::error::Error;
+use std::sync::{Condvar, Mutex};
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::PoisonError;
+
+#[derive(Debug, Clone)]
+pub struct MulticastRingBuffError;
+
+impl fmt::Display for MulticastRingBuffError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "MulticastRingBuffer lock error in notifier.")
+    }
+    
+}
+
+impl Error for MulticastRingBuffError {}
+
+impl<T> From<PoisonError<T>> for MulticastRingBuffError {
+    fn from(_: PoisonError<T>) -> Self {
+        MulticastRingBuffError
+    }
+}
 
 pub struct MulticastRingBuffer {
-    buffer: Vec<Complex<f32>>,
+    pub buffer: Vec<Complex32>,
     mask: usize,       // For fast modulo: index & mask
-    head: AtomicUsize, // Written by DFE
+    pub head: AtomicUsize, // Written by DFE
+    pub notifier: Mutex<bool>,
+    pub condvar: Condvar
 }
 
 impl MulticastRingBuffer {
@@ -14,18 +38,20 @@ impl MulticastRingBuffer {
             buffer: Vec::with_capacity(size),
             mask: size - 1,
             head: AtomicUsize::new(0),
+            notifier: Mutex::new(false),
+            condvar: Condvar::new(),
         }
     }
 
     /// It is safe because the input samples are in contigous memory and the buffer is also a large 
     /// contiguous memory. But, copying data is still costly, we can consider using a more zero-copy 
     /// approach in the future
-    pub fn write_samples(&self, samples: &[Complex<f32>]) {
+    pub fn write_samples(&self, samples: &[Complex32]) -> Result<(), MulticastRingBuffError>{
         let start = self.head.load(Ordering::Relaxed) & self.mask;
         let n = samples.len();
 
         unsafe {
-            let ptr = self.buffer.as_ptr() as *mut Complex<f32>;
+            let ptr = self.buffer.as_ptr() as *mut Complex32;
             let dest = ptr.add(start);
             
             // Can we use a more zero-copy approach to write samples to the buffer? 
@@ -49,13 +75,20 @@ impl MulticastRingBuffer {
         }
 
         self.head.store(start + n, Ordering::Release);
+
+        // Wake up Tracking after writing new samples
+        let mut guard = self.notifier.lock()?;
+        *guard = true;
+        self.condvar.notify_all();
+
+        Ok(())
     }
 
     pub fn get_head(&self) -> usize {
         self.head.load(Ordering::Acquire)
     }
 
-    pub fn copy_to_slice(&self, start: usize, dest: &mut [Complex<f32>]) {
+    pub fn copy_to_slice(&self, start: usize, dest: &mut [Complex32]) {
         let n = dest.len();
         let physical_start = start & self.mask;
         let buffer_len = self.buffer.len();
