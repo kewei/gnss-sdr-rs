@@ -33,7 +33,7 @@ impl DigitalFrontend {
             let a = f32x8::from_slice(&chunk[0..8]);
             let b = f32x8::from_slice(&chunk[8..16]);
 
-            let (mut re_v, mut im_v) = a.deinterleave(b);  // Now i_v and q_v contain the I and Q components of 8 samples separately
+            let (mut re_v, mut im_v) = a.deinterleave(b);  // Now re_v and im_v contain the I and Q components of 8 samples separately
  
             // DC offset removal
             let (dc_removed_re, dc_removed_im) = self.dc_remove.process_block(re_v, im_v);

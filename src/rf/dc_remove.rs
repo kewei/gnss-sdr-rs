@@ -10,11 +10,12 @@ pub struct DcRemoverSimd {
 
 impl DcRemoverSimd {
     pub fn new(alpha: f32) -> Self {
-        let con = f32x8::splat(1.0) - self.alpha;
+        let alpha_splat = f32x8::splat(alpha);
+        let con = f32x8::splat(1.0) - alpha_splat;
         Self {
             bias_re: f32x8::splat(0.0),
             bias_im: f32x8::splat(0.0),
-            alpha: f32x8::splat(alpha),
+            alpha: alpha_splat,
             con,
         }
     }
