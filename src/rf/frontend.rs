@@ -9,7 +9,9 @@ pub struct DigitalFrontend {
     // DC offset removal
     dc_remove: DcRemoverSimd,
     // Resampling
+    #[allow(dead_code)]
     input_sample_rate: f32,
+    #[allow(dead_code)]
     output_sample_rate: f32,
 }
 

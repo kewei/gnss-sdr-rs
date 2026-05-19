@@ -13,6 +13,6 @@ pub struct SamplesRingBuffer<T> {
 
 pub fn create_samples_ring_buffer<T>(size: usize) -> SamplesRingBuffer<T> {
     let rb = HeapRb::<T>::new(size);
-    let (mut producer, mut consumer) = rb.split();
+    let (producer, consumer) = rb.split();
     SamplesRingBuffer { producer, consumer }
 }

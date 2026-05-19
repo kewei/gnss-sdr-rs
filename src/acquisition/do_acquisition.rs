@@ -1,5 +1,5 @@
 use crate::acquisition::doppler_shift::{DopplerShiftTable, apply_doppler_shift};
-use crate::constants::gps_def_constants::{
+use crate::constants::gps_property_constants::{
     GPS_L1_CA_CODE_LENGTH_CHIPS, GPS_L1_CA_CODE_RATE_CHIPS_PER_S,
 };
 use crate::tracking::do_tracking::TrackingMessage;
@@ -16,11 +16,11 @@ use std::simd::f32x8;
 use std::simd::num::SimdFloat;
 use std::sync::{Arc, PoisonError};
 
-const FFT_LENGTH_MS: u8 = 1;
+// const FFT_LENGTH_MS: u8 = 1;
 const FREQ_SEARCH_ACQUISITION_HZ: f32 = 14e3; // Hz
 const FREQ_SEARCH_STEP_HZ: u16 = 500; // Hz
 pub const PRN_SEARCH_ACQUISITION_TOTAL: u8 = 32; // 32 PRN codes to search
-const LONG_SAMPLES_LENGTH: u8 = 11; // ms
+// const LONG_SAMPLES_LENGTH: u8 = 11; // ms
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum ChannelState {
@@ -74,7 +74,7 @@ impl AcquisitionManager {
 }
 
 #[derive(Debug, Clone)]
-struct AcqError;
+pub struct AcqError;
 
 impl fmt::Display for AcqError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -122,7 +122,6 @@ pub struct AcquisitionWorker {
     // doppler_table: &DopplerShiftTable,
     ca_code_samples_fft: Vec<Complex<f32>>,
     result_buf: Vec<Complex<f32>>,
-    freq_replica: Vec<Complex<f32>>,
 }
 
 impl AcquisitionWorker {
@@ -148,7 +147,7 @@ impl AcquisitionWorker {
         //     planner.plan_fft_forward(fft_size).process(&mut ca_code_samples_fft[prn]);
         // }
 
-        let ca_code_samples = generate_ca_code_samples(prn, freq_sampling_hz);
+        let ca_code_samples = generate_ca_code_samples(prn, GPS_L1_CA_CODE_RATE_CHIPS_PER_S, freq_sampling_hz);
         let mut ca_code_samples_fft = vec![Complex::new(0.0, 0.0); ca_code_samples.len()];
         planner
             .plan_fft_forward(fft_size)
@@ -163,7 +162,6 @@ impl AcquisitionWorker {
             // doppler_table: doppler_table.as_slice(),
             ca_code_samples_fft: ca_code_samples_fft,
             result_buf: vec![Complex::new(0.0, 0.0); fft_size],
-            freq_replica: vec![Complex::new(0.0, 0.0); fft_size],
         }
     }
 
@@ -263,7 +261,6 @@ pub fn run(
         .filter_map(|prn| Some(AcquisitionWorker::new(prn, fft_size, freq_sampling_hz)))
         .collect::<Vec<AcquisitionWorker>>();
 
-    let mut local_tail = 0;
     let mut chunk_samples = vec![Complex::new(0.0, 0.0); fft_size];
     let mut last_run = std::time::Instant::now();
 
@@ -288,8 +285,9 @@ pub fn run(
         }
 
         let head = multi_buffer.get_head();
+
         if head >= fft_size {
-            local_tail = head - fft_size;
+            let local_tail = head - fft_size;
             multi_buffer.copy_to_slice(local_tail, &mut chunk_samples);
             let results: Vec<AcquisitionResult> = workers
                 .par_iter_mut()

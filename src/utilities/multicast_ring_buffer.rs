@@ -32,11 +32,11 @@ pub struct MulticastRingBuffer {
 }
 
 impl MulticastRingBuffer {
-    pub fn new(size: usize) -> Self {
-        assert!(size.is_power_of_two(), "Buffer size must be a power of two");
+    pub fn new(buf_size: usize) -> Self {
+        assert!(buf_size.is_power_of_two(), "Buffer size must be a power of two");
         Self {
-            buffer: Vec::with_capacity(size),
-            mask: size - 1,
+            buffer: vec![Complex32::new(0.0, 0.0); buf_size],
+            mask: buf_size - 1,
             head: AtomicUsize::new(0),
             notifier: Mutex::new(false),
             condvar: Condvar::new(),
@@ -47,7 +47,8 @@ impl MulticastRingBuffer {
     /// contiguous memory. But, copying data is still costly, we can consider using a more zero-copy 
     /// approach in the future
     pub fn write_samples(&self, samples: &[Complex32]) -> Result<(), MulticastRingBuffError>{
-        let start = self.head.load(Ordering::Relaxed) & self.mask;
+        let current_head = self.head.load(Ordering::Relaxed);
+        let start = current_head & self.mask;
         let n = samples.len();
 
         unsafe {
@@ -60,7 +61,6 @@ impl MulticastRingBuffer {
             // data and improve performance.
 
             let buffer_len = self.buffer.len();
-            
             if start + n <= buffer_len {
                 std::ptr::copy_nonoverlapping(samples.as_ptr(), dest, n);
             } else {
@@ -74,7 +74,7 @@ impl MulticastRingBuffer {
             }
         }
 
-        self.head.store(start + n, Ordering::Release);
+        self.head.store(current_head + n, Ordering::Release);
 
         // Wake up Tracking after writing new samples
         let mut guard = self.notifier.lock()?;
@@ -113,18 +113,26 @@ mod tests {
     fn test_multicast_ring_buffer() {
         let ring_buf = MulticastRingBuffer::new(1024);
         let samples: Vec<Complex<f32>> = (0..500).map(|i| Complex::new(i as f32, 0.0)).collect();
-        ring_buf.write_samples(&samples);
-        assert_eq!(ring_buf.get_head(), 500);
+        let _ = ring_buf.write_samples(&samples);
         assert_eq!(ring_buf.get_head(), 500);
 
+
         let more_samples = (500..1030).map(|i| Complex::new(i as f32, 0.0)).collect::<Vec<_>>();
-        ring_buf.write_samples(&more_samples);
+        let _ = ring_buf.write_samples(&more_samples);
         assert_eq!(ring_buf.get_head(), 1030);
         assert_eq!(ring_buf.buffer[1020..1024], (1020..1024).map(|i| Complex::new(i as f32, 0.0)).collect::<Vec<_>>()[..]);
         assert_eq!(ring_buf.buffer[0..6], (1024..1030).map(|i| Complex::new(i as f32, 0.0)).collect::<Vec<_>>()[..]);
 
         let mut dest = vec![Complex::new(0.0, 0.0); 10];
-        ring_buf.copy_to_slice(1020, &mut dest);
+        let _ = ring_buf.copy_to_slice(1020, &mut dest);
         assert_eq!(dest, (1020..1030).map(|i| Complex::new(i as f32, 0.0)).collect::<Vec<_>>()[..]);
+
+        let more_samples = (1030..1050).map(|i| Complex::new(i as f32, 0.0)).collect::<Vec<_>>();
+        let _ = ring_buf.write_samples(&more_samples);
+        assert_eq!(ring_buf.get_head(), 1050);
+        assert_eq!(ring_buf.buffer[1020..1024], (1020..1024).map(|i| Complex::new(i as f32, 0.0)).collect::<Vec<_>>()[..]);
+        assert_eq!(ring_buf.buffer[0..6], (1024..1030).map(|i| Complex::new(i as f32, 0.0)).collect::<Vec<_>>()[..]);
+        assert_eq!(ring_buf.buffer[6..16], (1030..1040).map(|i| Complex::new(i as f32, 0.0)).collect::<Vec<_>>()[..]);
+
     }
 }

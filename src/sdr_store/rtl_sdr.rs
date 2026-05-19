@@ -1,7 +1,7 @@
 use crate::sdr_store::sdr_wrapper::{SdrConfig, SdrDeviceWrapper, SdrError, SdrInfo};
 use crate::sdr_store::utils::hashmap_to_args;
 use rustfft::num_complex::Complex32;
-use serde_json::{Value, json};
+use serde_json::Value;
 use soapysdr::{Args, Device, Direction, RxStream, TxStream};
 use std::collections::HashMap;
 use std::thread;
@@ -141,6 +141,7 @@ impl SdrDeviceWrapper for RtlSdr<Device> {
         n_samples
     }
 
+    #[allow(unused_variables)]
     fn transmit_samples(&self, buf: &mut [&mut [Complex32]]) -> Result<(), SdrError> {
         // Implementation for transmitting samples
         Ok(())
@@ -170,6 +171,7 @@ impl RtlSdr<Device> {
         })
     }
 
+    #[allow(unused_variables)]
     pub fn start_sdr(&mut self, chnls: &[usize], time_ns: Option<i64>) -> Result<(), SdrError> {
         // Implementation for starting the RX stream
         let mut rx_stream = self
@@ -184,6 +186,7 @@ impl RtlSdr<Device> {
         Ok(())
     }
 
+    #[allow(unused_variables)]
     pub fn stop_sdr(&mut self, chnls: &[usize], time_ns: Option<i64>) -> Result<(), SdrError> {
         // Implementation for stopping the RX stream
         Ok(())
@@ -206,7 +209,6 @@ mod tests {
     #[test]
     fn test_rtl_sdr_args() {
         let args_str = "driver=rtlsdr, label=Generic RTL2832U OEM :: 00000001, manufacturer=Realtek, product=RTL2838UHIDIR, serial=00000001, tuner=Rafael Micro R820T";
-        let args = Args::from(args_str);
         let rtl_sdr = RtlSdr::<MockDevice>::new(Args::from(args_str))
             .expect("Failed to mock a RTL-SDR device");
         assert!(rtl_sdr.sdr_info.serial_number == Some("00000001".to_string()));

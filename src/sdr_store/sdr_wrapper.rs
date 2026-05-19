@@ -4,10 +4,8 @@ use std::error::Error;
 use std::hash::Hash;
 use serde::{Serialize, Deserialize};
 use serde_json::Value;
-use signal_hook::low_level::channel;
-use strum::IntoEnumIterator;
 use strum_macros::EnumIter;
-use soapysdr::{Args, Device, StreamSample, Direction, RxStream, TxStream, Range};
+use soapysdr::{Args, Device, Direction, RxStream, TxStream, Range};
 use num_complex::Complex32;
 use crate::sdr_store::rtl_sdr::RtlSdr;
 
@@ -216,14 +214,17 @@ impl SdrDeviceWrapper for Device {
         SdrConfig::default()
     }
 
+    #[allow(unused_variables)]
     fn config(&mut self, config: Value) -> Result<(), SdrError> {
         Ok(())
     }
 
+    #[allow(unused_variables)]
     fn read_samples(&mut self, buf: &mut [&mut [Complex32]], timeout_us: i64) -> Result<usize, SdrError> {
         Ok(buf.len())
     }
 
+    #[allow(unused_variables)]
     fn transmit_samples(&self, buf: &mut [&mut [Complex32]]) -> Result<(), SdrError> {
         Ok(())
     }
@@ -241,7 +242,8 @@ impl SdrDeviceWrapper for Device {
 //     }
 // }
 
-pub fn start_device_with_name(device_name: String, args: Option<Args>) -> Result<impl SdrDeviceWrapper, SdrError> {
+
+pub fn start_device_with_name(device_name: String) -> Result<impl SdrDeviceWrapper, SdrError> {
     let mut devs_args: Vec<Args> = Vec::new();
     let mut args = Args::new();
     args.set("driver", device_name.clone());

@@ -9,9 +9,9 @@ use std::sync::Arc;
 
 static BLOCK_SIZE: usize = 2048;
 
-fn rf_thread(
+pub fn rf_thread(
     rf_config: &RfConfig,
-    input_sample_rate: &f32,
+    input_sample_rate: f32,
     sdr_consumer: &mut HeapCons<SampleComplex>,
     shared_ring_buffer: Arc<MulticastRingBuffer>,
 ) {
@@ -19,7 +19,7 @@ fn rf_thread(
     let mut block = [SampleComplex::new(0.0, 0.0); BLOCK_SIZE];
     let mut frontend = DigitalFrontend::new(
         rf_config.freq_if_hz.unwrap_or(0.0),
-        *input_sample_rate,
+        input_sample_rate,
         rf_config.output_sample_rate_hz,
     );
     loop {
@@ -43,7 +43,7 @@ fn rf_thread(
                 let mut block_planar = prepare_block(&mut block, BLOCK_SIZE); // size: 2 * BLOCK_SIZE
                 frontend.process_block(&mut block_planar);
                 let block_complex = post_process_block(&mut block_planar, BLOCK_SIZE * 2);
-                shared_ring_buffer.write_samples(&block_complex);
+                let _ = shared_ring_buffer.write_samples(&block_complex);
                 // let mut written = 0;
                 // while written < BLOCK_SIZE * 2 {
                 //     let n = rf_prod.push_slice(&block_planar[written..BLOCK_SIZE * 2]);
@@ -60,12 +60,12 @@ fn rf_thread(
 
 /// It maps the complex samples to a planar format, where the real and imaginary parts are stored interleaved
 /// It is safe because the input data is in contigous memory
-fn prepare_block(data: &mut [Complex32], len_data: usize) -> (&mut [f32]) {
+fn prepare_block(data: &mut [Complex32], len_data: usize) -> &mut [f32] {
     unsafe { std::slice::from_raw_parts_mut(data.as_mut_ptr() as *mut f32, len_data * 2) }
 }
 
 /// It maps the planar samples to a complex format, where the real and imaginary parts are stored interleaved
 /// It is safe because the input data is in contigous memory
-fn post_process_block(data: &mut [f32], len_data: usize) -> (&mut [Complex32]) {
+fn post_process_block(data: &mut [f32], len_data: usize) -> &mut [Complex32] {
     unsafe { std::slice::from_raw_parts_mut(data.as_mut_ptr() as *mut Complex32, len_data / 2) }
 }

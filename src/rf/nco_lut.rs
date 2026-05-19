@@ -1,6 +1,3 @@
-#![feature(portable_simd)]
-
-use num_complex::Complex;
 use std::f32::consts::PI;
 use std::simd::f32x8;
 

@@ -1,4 +1,3 @@
-#![feature(portable_simd)]
 use std::simd::f32x8;
 
 pub struct DcRemoverSimd {

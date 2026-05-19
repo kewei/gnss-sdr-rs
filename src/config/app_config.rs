@@ -1,7 +1,7 @@
 use std::fmt::{Display, Formatter};
 use serde::Deserialize;
 use crate::sdr_store::sdr_wrapper::SdrConfig;
-use crate::constants::gps_def_constants::GPS_L1_FREQ_HZ;
+use crate::constants::gps_property_constants::GPS_L1_FREQ_HZ;
 
 pub static APP_CONFIG_FILE: &str = "config/app_config.toml";
 

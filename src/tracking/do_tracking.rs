@@ -1,6 +1,6 @@
 use crate::acquisition::do_acquisition::{AcquisitionResult, ChannelState};
 use crate::constants::gps_ca_constants::GPS_CA_CODE_32_PRN;
-use crate::constants::gps_def_constants::{
+use crate::constants::gps_property_constants::{
     GPS_L1_CA_CODE_LENGTH_CHIPS, GPS_L1_CA_CODE_RATE_CHIPS_PER_S,
 };
 use crate::utilities::ca_code::generate_ca_code_samples;
@@ -12,7 +12,6 @@ use std::error::Error;
 use std::f32::consts::PI;
 use std::sync::Arc;
 use std::sync::PoisonError;
-use std::simd::f32x8;
 
 const LOCK_THRESHOLD: f32 = 15.0;
 const MAX_LOST_EPOCHS: u32 = 20; // ms
@@ -351,7 +350,7 @@ impl TrackingManager {
     }
 }
 
-pub fn run_tracking(
+pub fn run(
     multi_ring_buf: Arc<MulticastRingBuffer>,
     acq_to_trk: Receiver<AcquisitionResult>,
     trk_to_acq: Sender<TrackingMessage>,
@@ -377,5 +376,156 @@ pub fn run_tracking(
             required_idx = manager.next_tracking_index();
             curr_head = multi_ring_buf.get_head();
         }
+    }
+}
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::utilities::ca_code;
+    use crate::constants::gps_property_constants;
+    use crate::tracking::do_tracking::TrackingChannel;
+    use crate::acquisition::do_acquisition::AcquisitionResult;
+    use num_complex::Complex32;
+    use std::f32::consts::PI;
+
+    /// Helper to generate 1ms of synthetic GPS L1 data
+    fn generate_synthetic_signal(
+        ca_code: &[i8],
+        doppler: f32,
+        starting_carrier_phase: f32,
+        starting_code_phase: f32,
+        f_sampling: f32,
+    ) -> Vec<Complex32> {
+        let samples_per_ms = (f_sampling / 1000.0) as usize;
+        let mut samples = Vec::with_capacity(samples_per_ms);
+        let code_phase_step = gps_property_constants::GPS_L1_CA_CODE_RATE_CHIPS_PER_S / f_sampling;
+
+        for i in 0..samples_per_ms {
+            // 1. Calculate continuous carrier phase
+            let carrier_phase = starting_carrier_phase + (2.0 * PI * doppler / f_sampling * i as f32);
+            
+            // 2. Calculate code phase and lookup chip
+            let current_code_phase = starting_code_phase + (code_phase_step * i as f32);
+            let chip_idx = (current_code_phase.ceil() as usize) % 1023;
+            let code_val = ca_code[chip_idx] as f32;
+
+            // 3. Synthesize the complex sample (Code * Carrier)
+            samples.push(Complex32::new(
+                code_val * carrier_phase.cos(),
+                code_val * carrier_phase.sin(),
+            ));
+        }
+        samples
+    }
+
+
+    #[test]
+    fn test_pll_frequency_pull_in() {
+        let prn = 2;
+        let f_sampling = 4_096_000.0; 
+        let mock_ca_code = ca_code::generate_ca_code_samples(prn, GPS_L1_CA_CODE_RATE_CHIPS_PER_S, f_sampling);
+
+        // 1. ARRANGE: The true incoming signal is at +3000 Hz
+        let true_doppler = 3000.0;
+        let signal_samples = generate_synthetic_signal(
+            &mock_ca_code, true_doppler, 0.0, 0.0, f_sampling
+        );
+
+        let buf = Arc::new(MulticastRingBuffer::new(2 * signal_samples.len()));
+        let _ = buf.write_samples(&signal_samples);
+
+        assert_eq!(buf.get_head(), signal_samples.len());
+        println!("Buffer head after writing samples: {}", buf.get_head());
+
+        let mut  trk_chl = TrackingChannel::new(0, f_sampling);
+        trk_chl.start(AcquisitionResult {
+            prn: prn,
+            carrier_freq: 2950.0, // We start with a local carrier that is 50 Hz slower than the true signal
+            code_phase: 0,
+            fs: f_sampling,
+            mag_relative: 10.0,
+            sample_global_index: 0,
+        });
+
+        trk_chl.update(buf.clone());
+
+        println!("Carrier error after first update: {}", trk_chl.carrier_error);
+        println!("Carrier NCO after first update: {}", trk_chl.carrier_nco);
+        println!("Carrier frequency after first update: {}", trk_chl.carrier_freq);
+
+        assert!(
+            trk_chl.carrier_error > 0.0,
+            "Discriminator failed: Expected a positive phase error, got {}",
+            trk_chl.carrier_error
+        );
+
+        // The loop filter should respond to this positive error by increasing the NCO command.
+        assert!(
+            trk_chl.carrier_nco > 0.0,
+            "Filter failed: Expected positive NCO push to speed up the local carrier, got {}",
+            trk_chl.carrier_nco
+        );
+
+        // The overall frequency for the NEXT loop should be closer to 3000 Hz.
+        assert!(
+            trk_chl.carrier_freq > 2950.0,
+            "State update failed: Frequency did not adjust upward. New freq: {}",
+            trk_chl.carrier_freq
+        );
+    }
+
+    #[test]
+    fn test_dll_code_phase_tracking() {
+        let f_sampling = 4_096_000.0;
+        let prn = 3;
+        let mock_ca_code = ca_code::generate_ca_code_samples(prn, GPS_L1_CA_CODE_RATE_CHIPS_PER_S, f_sampling);
+
+        // 1. ARRANGE: Signal is perfectly matched in frequency (0 Hz), but the true code 
+        // is arriving slightly EARLY (shifted forward by 0.25 chips).
+        let signal_samples = generate_synthetic_signal(
+            &mock_ca_code, 0.0, 0.0, 0.25, f_sampling
+        );
+
+        let buf = Arc::new(MulticastRingBuffer::new(2 * signal_samples.len()));
+        let _ = buf.write_samples(&signal_samples);
+
+        assert_eq!(buf.get_head(), signal_samples.len());
+
+        let mut trk_chl = TrackingChannel::new(prn, f_sampling);
+        trk_chl.start(AcquisitionResult {
+            prn: prn,
+            carrier_freq: 0.0,
+            code_phase: 0, // Our local code starts perfectly aligned, but the real signal is early
+            fs: f_sampling,
+            mag_relative: 10.0,
+            sample_global_index: 0,
+        });
+
+        // 2. ACT
+        trk_chl.update(buf.clone());
+
+        println!("Code error after first update: {}", trk_chl.code_error);
+        println!("Code NCO after first update: {}", trk_chl.code_nco);
+        println!("Code rate after first update: {}", trk_chl.code_rate);
+        println!("Code phase after first update: {}", trk_chl.code_phase);
+
+        // 3. ASSERT
+        // Because the actual signal is arriving early relative to our local prompt code,
+        // it should hit the EARLY correlator harder than the LATE correlator.
+        // Therefore, the early-minus-late discriminator should produce a positive error.
+        assert!(
+            trk_chl.code_error > 0.0,
+            "DLL Discriminator failed: Expected positive error for early signal, got {}",
+            trk_chl.code_error
+        );
+
+        // The NCO should absorb this positive error.
+        assert!(
+            trk_chl.code_nco > 0.0,
+            "DLL Filter failed: Expected positive NCO adjustment, got {}",
+            trk_chl.code_nco
+        );
     }
 }

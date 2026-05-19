@@ -1,9 +1,7 @@
-use std::collections::HashMap;
 use soapysdr::{Args, Device};
 use serde_json::Value;
 use rustfft::num_complex::Complex32;
 use crate::sdr_store::sdr_wrapper::{SdrInfo, SdrConfig, SdrDeviceWrapper, SdrError};
-use crate::sdr_store::utils::hashmap_to_args;
 use crate::sdr_store::rtl_sdr::RtlSdr;
 
 pub struct MockDevice {
@@ -25,14 +23,17 @@ impl SdrDeviceWrapper for MockDevice {
         self.sdr_config.clone()
     }
 
+    #[allow(unused_variables)]
     fn config(&mut self, config: Value) -> Result<(), SdrError> {
         Ok(())
     }
 
+    #[allow(unused_variables)]
     fn read_samples(&mut self, buf: &mut [&mut [Complex32]], timeout_us: i64) -> Result<usize, SdrError> {
         Ok(buf.len())
     }
 
+    #[allow(unused_variables)]
     fn transmit_samples(&self, buf: &mut [&mut [Complex32]]) -> Result<(), SdrError> {
         Ok(())
     }

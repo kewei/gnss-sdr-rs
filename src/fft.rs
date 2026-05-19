@@ -4,6 +4,7 @@ use std::sync::Arc;
 
 pub struct FFT<T: FftNum> {
     fft: Arc<dyn Fft<T>>,
+    #[allow(dead_code)]
     len: usize,
 }
 
@@ -12,8 +13,8 @@ impl<T: FftNum> FFT<T> {
         let mut planner = FftPlanner::<T>::new();
         let fft = planner.plan_fft_forward(len);
         Self {
-            fft,
-            len,
+            fft: fft,
+            len: len,
         }
     }
 
@@ -38,14 +39,14 @@ impl<T: FftNum> RealFFT<T> {
         let mut planner = RealFftPlanner::<T>::new();
         let fft = planner.plan_fft_forward(len);
         Self {
-            fft,
-            len,
+            fft: fft,
+            len: len,
         }
     }
 
     pub fn execute(&self, input: &mut [T]) -> Vec<Complex<T>> {
         let mut buffer = vec![Complex{ re: T::zero(), im: T::zero()}; self.len / 2 + 1];
-        self.fft.process(input, &mut buffer);
+        let _ =self.fft.process(input, &mut buffer);
         buffer
     }
 
