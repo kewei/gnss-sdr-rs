@@ -93,7 +93,7 @@ impl<T> From<PoisonError<T>> for AcqError {
 #[derive(Debug, Clone)]
 pub struct AcquisitionResult {
     pub prn: u8,
-    pub code_phase: usize,
+    pub code_phase: f32,
     pub carrier_freq: f32,
     pub fs: f32,
     pub mag_relative: f32,
@@ -104,7 +104,7 @@ impl AcquisitionResult {
     pub fn new(prn: u8) -> Self {
         Self {
             prn,
-            code_phase: 0,
+            code_phase: 0.0,
             carrier_freq: 0.0,
             fs: 0.0,
             mag_relative: 0.0,
@@ -206,7 +206,7 @@ impl AcquisitionWorker {
             if self.is_good_satellite(&power_results, max_val) {
                 return Some(AcquisitionResult {
                     prn: self.prn,
-                    code_phase: best_code_phase,
+                    code_phase: best_code_phase as f32 * GPS_L1_CA_CODE_RATE_CHIPS_PER_S / self.freq_sampling_hz,
                     carrier_freq: best_doper_freq,
                     fs: self.freq_sampling_hz,
                     mag_relative: max_val,

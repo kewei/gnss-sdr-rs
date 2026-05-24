@@ -443,7 +443,7 @@ mod tests {
         trk_chl.start(AcquisitionResult {
             prn: prn,
             carrier_freq: 2950.0, // We start with a local carrier that is 50 Hz slower than the true signal
-            code_phase: 0,
+            code_phase: 0.0,
             fs: f_sampling,
             mag_relative: 10.0,
             sample_global_index: 0,
@@ -497,7 +497,7 @@ mod tests {
         trk_chl.start(AcquisitionResult {
             prn: prn,
             carrier_freq: 0.0,
-            code_phase: 0, // Our local code starts perfectly aligned, but the real signal is early
+            code_phase: 0.0, // Our local code starts perfectly aligned, but the real signal is early
             fs: f_sampling,
             mag_relative: 10.0,
             sample_global_index: 0,
