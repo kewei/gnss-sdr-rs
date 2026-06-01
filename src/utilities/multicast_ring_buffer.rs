@@ -23,6 +23,16 @@ impl<T> From<PoisonError<T>> for MulticastRingBuffError {
     }
 }
 
+// TODO: We can consider using a more zero-copy approach in the future:
+// Option 1: when reading samples, we can return a reference to the buffer 
+// instead of copying data to a separate buffer, returning two slices if 
+// the data is wrapped around. But we need to be careful about the lifetime
+// of the reference and ensure that it is not used after the buffer is 
+// overwritten by new samples.
+// Option 2: Virtual Memory Double Mapping, OS system calls (mmap on Linux/macOS,
+// VirtualAlloc on Windows). If your buffer size is N bytes, Virtual Address 
+// 0 to N points to your physical memory. Virtual Address N to 2N points
+// to the exact same physical memory.
 pub struct MulticastRingBuffer {
     pub buffer: Vec<UnsafeCell<Complex32>>,
     buf_size: usize,
@@ -119,17 +129,19 @@ impl MulticastRingBuffer {
     }
 }
 
-unsafe impl  Sync for MulticastRingBuffer {}
+unsafe impl Sync for MulticastRingBuffer {}
 
 #[cfg(test)]
 mod tests {
     use std::cell::UnsafeCell;
 
-use crate::utilities::multicast_ring_buffer::MulticastRingBuffer;
-use num_complex::Complex;
+    use crate::utilities::multicast_ring_buffer::MulticastRingBuffer;
+    use num_complex::Complex;
 
     fn as_slice(r_cells: &[UnsafeCell<Complex<f32>>]) -> &[Complex<f32>] {
-        unsafe { std::slice::from_raw_parts(r_cells.as_ptr() as *const Complex<f32>, r_cells.len()) }
+        unsafe {
+            std::slice::from_raw_parts(r_cells.as_ptr() as *const Complex<f32>, r_cells.len())
+        }
     }
 
     #[test]
@@ -148,13 +160,15 @@ use num_complex::Complex;
             as_slice(&ring_buf.buffer[1020..1024]),
             (1020..1024)
                 .map(|i| Complex::new(i as f32, 0.0))
-                .collect::<Vec<_>>().as_slice()
+                .collect::<Vec<_>>()
+                .as_slice()
         );
         assert_eq!(
             as_slice(&ring_buf.buffer[0..6]),
             (1024..1030)
                 .map(|i| Complex::new(i as f32, 0.0))
-                .collect::<Vec<_>>().as_slice()
+                .collect::<Vec<_>>()
+                .as_slice()
         );
 
         let mut dest = vec![Complex::new(0.0, 0.0); 10];
@@ -175,19 +189,22 @@ use num_complex::Complex;
             as_slice(&ring_buf.buffer[1020..1024]),
             (1020..1024)
                 .map(|i| Complex::new(i as f32, 0.0))
-                .collect::<Vec<_>>().as_slice()
+                .collect::<Vec<_>>()
+                .as_slice()
         );
         assert_eq!(
             as_slice(&ring_buf.buffer[0..6]),
             (1024..1030)
                 .map(|i| Complex::new(i as f32, 0.0))
-                .collect::<Vec<_>>().as_slice()
+                .collect::<Vec<_>>()
+                .as_slice()
         );
         assert_eq!(
             as_slice(&ring_buf.buffer[6..16]),
             (1030..1040)
                 .map(|i| Complex::new(i as f32, 0.0))
-                .collect::<Vec<_>>().as_slice()
+                .collect::<Vec<_>>()
+                .as_slice()
         );
     }
 }

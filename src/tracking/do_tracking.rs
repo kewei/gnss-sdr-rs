@@ -264,7 +264,8 @@ impl TrackingChannel {
         let pll_err = (q_p / i_p).atan() / (2.0 * PI);
         self.carrier_nco = self.pll_filter.update(pll_err, self.carrier_error, PLL_SUM_CARR);
         self.carrier_error = pll_err;
-        self.carrier_freq += self.carrier_nco;
+        self.carrier_freq += self.carrier_nco; // with positive doppler, the local carrier needs to add a 
+        // NCO to catch up
 
         let pow_e = (i_e.powi(2) + q_e.powi(2)).sqrt();
         let pow_l = (i_l.powi(2) + q_l.powi(2)).sqrt();
@@ -277,7 +278,8 @@ impl TrackingChannel {
 
         self.code_nco = self.dll_filter.update(dll_err, self.code_error, DLL_SUM_CODE);
         self.code_error = dll_err;
-        self.code_rate += self.code_nco;
+        self.code_rate += self.code_nco; // If the signal is early, nco is positive, we need to slow down
+        // the local code to match the real signal, so it subtracts the NCO here.
     }
 
     pub fn reset(&mut self) {
@@ -360,9 +362,9 @@ pub fn run(
     loop {
         let mut curr_head = multi_ring_buf.get_head();
         let mut required_idx = manager.next_tracking_index();
-        if curr_head < required_idx {
+        if (curr_head.wrapping_sub(required_idx) as isize) < 0 {
             let mut head_guard = multi_ring_buf.notifier.lock()?;
-            while multi_ring_buf.get_head() < manager.next_tracking_index() {
+            while (multi_ring_buf.get_head().wrapping_sub(manager.next_tracking_index()) as isize) < 0 {
                 head_guard = multi_ring_buf.condvar.wait(head_guard)?;
             }
             
@@ -370,7 +372,7 @@ pub fn run(
             drop(head_guard);
         }
 
-        while required_idx <= curr_head {
+        while (curr_head.wrapping_sub(required_idx) as isize) >= 0 {
             manager.process_channels(multi_ring_buf.clone());
 
             required_idx = manager.next_tracking_index();
@@ -427,17 +429,15 @@ mod tests {
         let f_sampling = 4_096_000.0; 
         let mock_ca_code = ca_code::generate_ca_code_samples(prn, GPS_L1_CA_CODE_RATE_CHIPS_PER_S, f_sampling);
 
-        // 1. ARRANGE: The true incoming signal is at +3000 Hz
         let true_doppler = 3000.0;
         let signal_samples = generate_synthetic_signal(
             &mock_ca_code, true_doppler, 0.0, 0.0, f_sampling
         );
 
-        let buf = Arc::new(MulticastRingBuffer::new(2 * signal_samples.len()));
+        let buf = Arc::new(MulticastRingBuffer::new(8 * signal_samples.len()));
         let _ = buf.write_samples(&signal_samples);
 
         assert_eq!(buf.get_head(), signal_samples.len());
-        println!("Buffer head after writing samples: {}", buf.get_head());
 
         let mut  trk_chl = TrackingChannel::new(0, f_sampling);
         trk_chl.start(AcquisitionResult {
@@ -451,9 +451,13 @@ mod tests {
 
         trk_chl.update(buf.clone());
 
-        println!("Carrier error after first update: {}", trk_chl.carrier_error);
-        println!("Carrier NCO after first update: {}", trk_chl.carrier_nco);
-        println!("Carrier frequency after first update: {}", trk_chl.carrier_freq);
+        let err1 = trk_chl.carrier_error;
+        let nco1 = trk_chl.carrier_nco;
+        let freq1 = trk_chl.carrier_freq;
+
+        println!("Carrier error after first update: {}", err1);
+        println!("Carrier NCO after first update: {}", nco1);
+        println!("Carrier frequency after first update: {}", freq1);
 
         assert!(
             trk_chl.carrier_error > 0.0,
@@ -461,19 +465,60 @@ mod tests {
             trk_chl.carrier_error
         );
 
-        // The loop filter should respond to this positive error by increasing the NCO command.
         assert!(
             trk_chl.carrier_nco > 0.0,
             "Filter failed: Expected positive NCO push to speed up the local carrier, got {}",
             trk_chl.carrier_nco
         );
 
-        // The overall frequency for the NEXT loop should be closer to 3000 Hz.
         assert!(
             trk_chl.carrier_freq > 2950.0,
             "State update failed: Frequency did not adjust upward. New freq: {}",
             trk_chl.carrier_freq
         );
+
+        let _ = buf.write_samples(&signal_samples);
+        let _ = buf.write_samples(&signal_samples);
+
+        assert_eq!(buf.get_head(), 3 * signal_samples.len());
+        assert_eq!(trk_chl.next_sample_index, trk_chl.num_samples_per_code);
+
+        let samplers_per_code = trk_chl.num_samples_per_code;
+
+        trk_chl.update(buf.clone());
+
+        let err2 = trk_chl.carrier_error;
+        let nco2 = trk_chl.carrier_nco;
+        let freq2 = trk_chl.carrier_freq;
+
+        println!("Carrier error after second update: {}", err2);
+        println!("Carrier NCO after second update: {}", nco2);
+        println!("Carrier frequency after second update: {}", freq2);
+        println!("Samples per code: {}", trk_chl.num_samples_per_code);
+
+        assert!((true_doppler-err2).abs() < (true_doppler-err1).abs());
+
+        let _ = buf.write_samples(&signal_samples);
+
+        assert_eq!(buf.get_head(), 4 * signal_samples.len());
+        assert_eq!(trk_chl.next_sample_index, samplers_per_code + trk_chl.num_samples_per_code);
+
+        let samplers_per_code = trk_chl.next_sample_index;
+
+        trk_chl.update(buf.clone());
+
+        let err3 = trk_chl.carrier_error;
+        let nco3 = trk_chl.carrier_nco;
+        let freq3 = trk_chl.carrier_freq;
+
+        println!("Carrier error after third update: {}", err3);
+        println!("Carrier NCO after third update: {}", nco3);
+        println!("Carrier frequency after third update: {}", freq3);
+        println!("Samples per code: {}", trk_chl.num_samples_per_code);
+
+        assert_eq!(trk_chl.next_sample_index, samplers_per_code + trk_chl.num_samples_per_code);
+        assert!((true_doppler-err3).abs() < (true_doppler-err2).abs());
+
     }
 
     #[test]
