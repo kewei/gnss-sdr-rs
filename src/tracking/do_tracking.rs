@@ -278,8 +278,7 @@ impl TrackingChannel {
 
         self.code_nco = self.dll_filter.update(dll_err, self.code_error, DLL_SUM_CODE);
         self.code_error = dll_err;
-        self.code_rate += self.code_nco; // If the signal is early, nco is positive, we need to slow down
-        // the local code to match the real signal, so it subtracts the NCO here.
+        self.code_rate += self.code_nco; // If the signal hits i_e harder, nco is positive.
     }
 
     pub fn reset(&mut self) {
@@ -410,7 +409,7 @@ mod tests {
             
             // 2. Calculate code phase and lookup chip
             let current_code_phase = starting_code_phase + (code_phase_step * i as f32);
-            let chip_idx = (current_code_phase.ceil() as usize) % 1023;
+            let chip_idx = (current_code_phase.floor() as usize) % 1023;
             let code_val = ca_code[chip_idx] as f32;
 
             // 3. Synthesize the complex sample (Code * Carrier)
@@ -527,8 +526,6 @@ mod tests {
         let prn = 3;
         let mock_ca_code = ca_code::generate_ca_code_samples(prn, GPS_L1_CA_CODE_RATE_CHIPS_PER_S, f_sampling);
 
-        // 1. ARRANGE: Signal is perfectly matched in frequency (0 Hz), but the true code 
-        // is arriving slightly EARLY (shifted forward by 0.25 chips).
         let signal_samples = generate_synthetic_signal(
             &mock_ca_code, 0.0, 0.0, 0.25, f_sampling
         );
@@ -548,29 +545,68 @@ mod tests {
             sample_global_index: 0,
         });
 
-        // 2. ACT
         trk_chl.update(buf.clone());
 
-        println!("Code error after first update: {}", trk_chl.code_error);
-        println!("Code NCO after first update: {}", trk_chl.code_nco);
-        println!("Code rate after first update: {}", trk_chl.code_rate);
-        println!("Code phase after first update: {}", trk_chl.code_phase);
 
-        // 3. ASSERT
-        // Because the actual signal is arriving early relative to our local prompt code,
-        // it should hit the EARLY correlator harder than the LATE correlator.
-        // Therefore, the early-minus-late discriminator should produce a positive error.
         assert!(
             trk_chl.code_error > 0.0,
             "DLL Discriminator failed: Expected positive error for early signal, got {}",
             trk_chl.code_error
         );
 
-        // The NCO should absorb this positive error.
         assert!(
             trk_chl.code_nco > 0.0,
             "DLL Filter failed: Expected positive NCO adjustment, got {}",
             trk_chl.code_nco
         );
+
+        let err1 = trk_chl.code_error;
+        let nco1 = trk_chl.code_nco;
+        let freq1 = trk_chl.code_rate;
+
+        println!("Code error after first update: {}", err1);
+        println!("Code NCO after first update: {}", nco1);
+        println!("Code rate after first update: {}", freq1);
+
+
+        let _ = buf.write_samples(&signal_samples);
+        let _ = buf.write_samples(&signal_samples);
+
+        assert_eq!(buf.get_head(), 3 * signal_samples.len());
+        assert_eq!(trk_chl.next_sample_index, trk_chl.num_samples_per_code);
+
+        let samplers_per_code = trk_chl.num_samples_per_code;
+
+        trk_chl.update(buf.clone());
+
+        let err2 = trk_chl.code_error;
+        let nco2 = trk_chl.code_nco;
+        let freq2 = trk_chl.code_rate;
+
+        println!("Code error after second update: {}", err2);
+        println!("Code NCO after second update: {}", nco2);
+        println!("Code rate after second update: {}", freq2);
+        println!("Samples per code: {}", trk_chl.num_samples_per_code);
+
+        let _ = buf.write_samples(&signal_samples);
+
+        assert_eq!(buf.get_head(), 4 * signal_samples.len());
+        assert_eq!(trk_chl.next_sample_index, samplers_per_code + trk_chl.num_samples_per_code);
+
+        let samplers_per_code = trk_chl.next_sample_index;
+
+        trk_chl.update(buf.clone());
+
+        let err3 = trk_chl.code_error;
+        let nco3 = trk_chl.code_nco;
+        let freq3 = trk_chl.code_rate;
+
+        println!("Code error after third update: {}", err3);
+        println!("Code NCO after third update: {}", nco3);
+        println!("Code rate after third update: {}", freq3);
+        println!("Samples per code: {}", trk_chl.num_samples_per_code);
+
+        assert_eq!(trk_chl.next_sample_index, samplers_per_code + trk_chl.num_samples_per_code);
+
     }
 }
