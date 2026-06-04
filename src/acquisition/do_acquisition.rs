@@ -5,6 +5,7 @@ use crate::constants::gps_property_constants::{
 use crate::tracking::do_tracking::TrackingMessage;
 use crate::utilities::ca_code::generate_ca_code_samples;
 use crate::utilities::multicast_ring_buffer::MulticastRingBuffer;
+use crate::utilities::help_fn::convert_i8_to_complex32;
 use num::Complex;
 use crossbeam_channel::{Sender, Receiver};
 use rayon::prelude::*;
@@ -20,7 +21,7 @@ use std::sync::{Arc, PoisonError};
 const FREQ_SEARCH_ACQUISITION_HZ: f32 = 14e3; // Hz
 const FREQ_SEARCH_STEP_HZ: u16 = 500; // Hz
 pub const PRN_SEARCH_ACQUISITION_TOTAL: u8 = 32; // 32 PRN codes to search
-// const LONG_SAMPLES_LENGTH: u8 = 11; // ms
+const LONG_SAMPLES_LENGTH: usize = 10; // ms
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum ChannelState {
@@ -93,7 +94,8 @@ impl<T> From<PoisonError<T>> for AcqError {
 #[derive(Debug, Clone)]
 pub struct AcquisitionResult {
     pub prn: u8,
-    pub code_phase: f32,
+    pub code_phase_samples: usize,
+    pub code_phase_chips: f32,
     pub carrier_freq: f32,
     pub fs: f32,
     pub mag_relative: f32,
@@ -104,7 +106,8 @@ impl AcquisitionResult {
     pub fn new(prn: u8) -> Self {
         Self {
             prn,
-            code_phase: 0.0,
+            code_phase_samples: 0,
+            code_phase_chips: 0.0,
             carrier_freq: 0.0,
             fs: 0.0,
             mag_relative: 0.0,
@@ -149,7 +152,7 @@ impl AcquisitionWorker {
 
         let ca_code_samples =
             generate_ca_code_samples(prn, GPS_L1_CA_CODE_RATE_CHIPS_PER_S, freq_sampling_hz);
-        let mut ca_code_samples_fft = vec![Complex::new(0.0, 0.0); ca_code_samples.len()];
+        let mut ca_code_samples_fft = convert_i8_to_complex32(ca_code_samples);
         planner
             .plan_fft_forward(fft_size)
             .process(&mut ca_code_samples_fft);
@@ -177,14 +180,8 @@ impl AcquisitionWorker {
         let mut best_doppler_freq: f32 = 0.0;
         let mut best_code_phase: usize = 0;
         let mut best_power_results = vec![0.0; self.fft_size];
-
         let mut accumulated_power = vec![0.0; self.fft_size];
 
-        let doppler_size = (FREQ_SEARCH_ACQUISITION_HZ as u16 / FREQ_SEARCH_STEP_HZ) as usize + 1;
-        let doppler_list = ((-FREQ_SEARCH_ACQUISITION_HZ as i32 / 2)
-            ..=(FREQ_SEARCH_ACQUISITION_HZ as i32 / 2))
-            .step_by(FREQ_SEARCH_STEP_HZ as usize)
-            .collect::<Vec<i32>>();
         for doppler in doppler_table.iter() {
             accumulated_power.fill(0.0);
 
@@ -228,7 +225,8 @@ impl AcquisitionWorker {
             if self.is_good_satellite(&best_power_results, global_max_val) {
                 return Some(AcquisitionResult {
                     prn: self.prn,
-                    code_phase: best_code_phase as f32 * GPS_L1_CA_CODE_RATE_CHIPS_PER_S
+                    code_phase_samples: best_code_phase,
+                    code_phase_chips: best_code_phase as f32 * GPS_L1_CA_CODE_RATE_CHIPS_PER_S
                         / self.freq_sampling_hz,
                     carrier_freq: best_doppler_freq,
                     fs: self.freq_sampling_hz,
@@ -249,14 +247,15 @@ impl AcquisitionWorker {
             .fold(f32x8::splat(0.0), |acc, x| acc + x)
             .reduce_sum();
         let avg_power: f32 = (sum_power - max_val) / (self.fft_size - 1) as f32;
-        println!("max_val: {:.2}, avg_power: {:.2}", max_val, avg_power);
-        max_val / avg_power > 3.0
+
+        max_val / avg_power > 7.0
     }
 }
 
 pub fn run(
     multi_buffer: Arc<MulticastRingBuffer>,
     freq_sampling_hz: f32,
+    f_if: f32,
     to_tracking: Sender<AcquisitionResult>,
     from_tracking: Receiver<TrackingMessage>,
 ) -> Result<(), AcqError> {
@@ -270,6 +269,7 @@ pub fn run(
         let doppler_freq =
             -FREQ_SEARCH_ACQUISITION_HZ / 2.0 + i as f32 * FREQ_SEARCH_STEP_HZ as f32;
         doppler_table.push(DopplerShiftTable::new(
+            f_if,
             doppler_freq,
             freq_sampling_hz,
             fft_size,
@@ -285,7 +285,7 @@ pub fn run(
         .filter_map(|prn| Some(AcquisitionWorker::new(prn, fft_size, freq_sampling_hz)))
         .collect::<Vec<AcquisitionWorker>>();
 
-    let samples_integration_size = fft_size * num_integrations;
+    let samples_integration_size = fft_size * LONG_SAMPLES_LENGTH;
     let mut chunk_samples = vec![Complex::new(0.0, 0.0); samples_integration_size];
     let mut last_run = std::time::Instant::now();
 
@@ -320,7 +320,7 @@ pub fn run(
                 .filter_map(|(i, worker)| {
                     let prn = i as u8 + 1;
                     if (mask >> (prn - 1)) & 1 == 1 {
-                        worker.search_satellite(&chunk_samples, &doppler_table, local_tail, num_integrations)
+                        worker.search_satellite(&chunk_samples, &doppler_table, local_tail, LONG_SAMPLES_LENGTH)
                     } else {
                         None
                     }
@@ -412,7 +412,9 @@ mod tests {
     fn test_acquisition_with_real_data() {
         const FS: f32 = 16_367_600.0;
         const IF: f32 = 4_130_400.0;
-        const MS_SAMPLES: usize = 10 * 16368;
+        const NUM_INTEGRATIONS: usize = 10;
+        const MS_SAMPLES: usize = NUM_INTEGRATIONS * 16368;
+
         let root = env!("CARGO_MANIFEST_DIR");
         let file_path = Path::new(root)
             .join("src")
@@ -431,27 +433,9 @@ mod tests {
         let mut raw_bytes = vec![0u8; MS_SAMPLES];
         file.read_exact(&mut raw_bytes)
             .expect("Failed to read 1ms of samples");
+        let mut raw_samples = vec![Complex32::new(0.0, 0.0); MS_SAMPLES];
+        raw_samples = raw_bytes.iter().map(|x| Complex32::new((*x as i8) as f32, 0.0)).collect();
 
-        // 2. Mix down to Baseband
-        // Convert int8 to f32 and multiply by local oscillator at -IF
-        let mut baseband_samples = Vec::with_capacity(MS_SAMPLES);
-        let phase_step = 2.0 * std::f32::consts::PI * IF / FS;
-
-        for (i, &byte) in raw_bytes.iter().enumerate() {
-            // Read as signed 8-bit integer
-            let val = (byte as i8) as f32;
-
-            // Generate the local oscillator phase
-            let phase = i as f32 * phase_step;
-            let lo = Complex32::new(phase.cos(), -phase.sin());
-
-            // Multiply real sample by complex LO
-            let sample_complex = Complex32::new(val, 0.0);
-            baseband_samples.push(sample_complex * lo);
-        }
-
-        // 3. Initialize Doppler Tables
-        // Creating tables for -7kHz to +7kHz in 500 Hz steps
         let doppler_start = -7000.0;
         let doppler_end = 7000.0;
         let step = 500.0;
@@ -460,34 +444,32 @@ mod tests {
         let mut current_doppler = doppler_start;
 
         while current_doppler <= doppler_end {
-            doppler_tables.push(DopplerShiftTable::new(current_doppler, FS, MS_SAMPLES/10));
+            doppler_tables.push(DopplerShiftTable::new(IF, current_doppler, FS, MS_SAMPLES/NUM_INTEGRATIONS));
             current_doppler += step;
         }
 
-        // 4. Initialize the Acquisition Worker
-        // Let's test with PRN 1. The FFT size must match the chunk size (MS_SAMPLES).
+        let true_satellites = vec![1, 2, 3, 6, 9, 11, 14, 18, 19, 22, 28, 32];
         let mut test_prn = 1;
         while test_prn < 33 {
-            let mut worker = AcquisitionWorker::new(test_prn, MS_SAMPLES/10, FS);
+            let mut worker = AcquisitionWorker::new(test_prn, MS_SAMPLES/NUM_INTEGRATIONS, FS);
 
-            // 5. Run the Acquisition
-            // Pass the baseband samples, the pre-computed tables, and a local tail of 0
-            let result = worker.search_satellite(&baseband_samples, &doppler_tables, 0, 10);
+            let result = worker.search_satellite(&raw_samples, &doppler_tables, 0, NUM_INTEGRATIONS);
 
-            // 6. Assertions & Validation
             match result {
                 Some(acq) => {
                     println!("SUCCESS: Acquired PRN {}!", acq.prn);
                     println!("  Doppler Shift:  {} Hz", acq.carrier_freq);
-                    println!("  Code Phase:     {} chips", acq.code_phase);
+                    println!("  Code Phase:     {} samples", acq.code_phase_samples);
+                    println!("  Code Phase:     {} chips", acq.code_phase_chips);
                     println!("  Relative Power: {}", acq.mag_relative);
 
-                    assert_eq!(acq.prn, test_prn);
+                    assert!(&true_satellites.contains(&test_prn), "Acquired PRN {} which is not in the true satellite list!", test_prn);
                 }
                 None => {
                     println!(
-                        "PRN {} not found in this 1ms chunk (satellite likely not visible).",
-                        test_prn
+                        "PRN {} not found in this {}ms chunk (satellite likely not visible).",
+                        test_prn,
+                        NUM_INTEGRATIONS
                     );
                 }
             }

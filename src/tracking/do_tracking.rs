@@ -152,7 +152,7 @@ impl TrackingChannel {
         self.ca_code_samples = generate_ca_code_samples(result.prn, self.code_rate, self.fs);
         self.prn = result.prn;
         self.carrier_freq = result.carrier_freq;
-        self.code_phase = result.code_phase as f32;
+        self.code_phase = result.code_phase_chips;
         self.state = ChannelState::Tracking(result.prn);
     }
 
@@ -442,7 +442,8 @@ mod tests {
         trk_chl.start(AcquisitionResult {
             prn: prn,
             carrier_freq: 2950.0, // We start with a local carrier that is 50 Hz slower than the true signal
-            code_phase: 0.0,
+            code_phase_samples: 0,
+            code_phase_chips: 0.0,
             fs: f_sampling,
             mag_relative: 10.0,
             sample_global_index: 0,
@@ -539,7 +540,8 @@ mod tests {
         trk_chl.start(AcquisitionResult {
             prn: prn,
             carrier_freq: 0.0,
-            code_phase: 0.0, // Our local code starts perfectly aligned, but the real signal is early
+            code_phase_samples: 0,
+            code_phase_chips: 0.0, // Our local code starts perfectly aligned, but the real signal is early
             fs: f_sampling,
             mag_relative: 10.0,
             sample_global_index: 0,

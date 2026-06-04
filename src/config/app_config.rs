@@ -14,7 +14,7 @@ pub struct AppConfig {
     pub output: OutputConfig,
 }
 
-#[derive(Deserialize, Debug)]
+#[derive(Clone, Copy, Deserialize, Debug)]
 pub struct RfConfig {
     pub freq_if_hz: Option<f32>,
     pub output_sample_rate_hz: f32,

@@ -206,6 +206,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let _ = do_acquisition::run(
             acquisition_multicast_buffer_clone,
             app_config.sdr.sample_rate_hz,
+            app_config.rf.freq_if_hz.unwrap_or(0.0),
             tx_acq,
             rx_trk,
         );
