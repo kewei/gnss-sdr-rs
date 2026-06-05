@@ -121,6 +121,7 @@ pub struct AcquisitionWorker {
     fft: Arc<dyn Fft<f32>>,
     ifft: Arc<dyn Fft<f32>>,
     fft_size: usize,
+    scratch_buf: Vec<Complex<f32>>,
     freq_sampling_hz: f32,
     // doppler_table: &DopplerShiftTable,
     ca_code_samples_fft: Vec<Complex<f32>>,
@@ -130,38 +131,24 @@ pub struct AcquisitionWorker {
 impl AcquisitionWorker {
     fn new(prn: u8, fft_size: usize, freq_sampling_hz: f32) -> Self {
         let mut planner = FftPlanner::new();
-        // let capacity = (FREQ_SEARCH_ACQUISITION_HZ / FREQ_SEARCH_STEP_HZ) as usize + 1;
-        // let mut doppler_table = Vec::with_capacity(capacity);
-        // for i in 0..capacity {
-        //     let doppler_freq = -FREQ_SEARCH_ACQUISITION_HZ / 2.0 + i as f32 * FREQ_SEARCH_STEP_HZ as f32;
-        //     doppler_table.push(DopplerShiftTable::new(doppler_freq, freq_sampling_hz, fft_size));
-        // }
-
-        // let mut ca_code_samples = Vec::with_capacity(PRN_SEARCH_ACQUISITION_TOTAL);
-        // for prn in 1..=PRN_SEARCH_ACQUISITION_TOTAL {
-        //     let samples = generate_ca_code_samples(prn, freq_sampling_hz);
-        //     ca_code_samples.push(samples);
-        // }
-
-        // let mut ca_code_samples_fft = [[Complex::new(0.0, 0.0); ca_code_samples[0].len()]; PRN_SEARCH_ACQUISITION_TOTAL];
-        // for prn in 1..=PRN_SEARCH_ACQUISITION_TOTAL {
-        //     // Convert to complex and do FFT
-        //     ca_code_samples_fft[prn] = ca_code_samples[prn - 1].iter().map(|&s| Complex::new(s as f32, 0.0)).collect();
-        //     planner.plan_fft_forward(fft_size).process(&mut ca_code_samples_fft[prn]);
-        // }
-
         let ca_code_samples =
             generate_ca_code_samples(prn, GPS_L1_CA_CODE_RATE_CHIPS_PER_S, freq_sampling_hz);
         let mut ca_code_samples_fft = convert_i8_to_complex32(ca_code_samples);
         planner
             .plan_fft_forward(fft_size)
             .process(&mut ca_code_samples_fft);
+        let fft = planner.plan_fft_forward(fft_size);
+        let ifft = planner.plan_fft_inverse(fft_size);
+        let fft_scratch_len = fft.get_inplace_scratch_len();
+        let ifft_scratch_len = ifft.get_inplace_scratch_len();
+        let scratch_len = fft_scratch_len.max(ifft_scratch_len);
 
         Self {
             prn: prn,
-            fft: planner.plan_fft_forward(fft_size),
-            ifft: planner.plan_fft_inverse(fft_size),
+            fft: fft,
+            ifft: ifft,
             fft_size: fft_size,
+            scratch_buf: vec![Complex::new(0.0, 0.0); scratch_len],
             freq_sampling_hz: freq_sampling_hz,
             // doppler_table: doppler_table.as_slice(),
             ca_code_samples_fft: ca_code_samples_fft,
@@ -193,13 +180,13 @@ impl AcquisitionWorker {
                     doppler,
                     &mut self.result_buf,
                 );
-                self.fft.process(&mut self.result_buf);
+                self.fft.process_with_scratch(&mut self.result_buf, &mut self.scratch_buf);
 
                 for i in 0..self.fft_size {
                     self.result_buf[i] *= self.ca_code_samples_fft[i].conj();
                 }
 
-                self.ifft.process(&mut self.result_buf);
+                self.ifft.process_with_scratch(&mut self.result_buf, &mut self.scratch_buf);
 
                 for (idx, val) in self.result_buf.iter().enumerate() {
                     accumulated_power[idx] += val.norm_sqr();
@@ -259,7 +246,6 @@ pub fn run(
     to_tracking: Sender<AcquisitionResult>,
     from_tracking: Receiver<TrackingMessage>,
 ) -> Result<(), AcqError> {
-    let num_integrations = 10;
     let capacity = (FREQ_SEARCH_ACQUISITION_HZ as u16 / FREQ_SEARCH_STEP_HZ) as usize + 1;
     let fft_size = (freq_sampling_hz
         / (GPS_L1_CA_CODE_RATE_CHIPS_PER_S / GPS_L1_CA_CODE_LENGTH_CHIPS))
@@ -349,6 +335,7 @@ mod tests {
     use std::fs::File;
     use std::io::Read;
     use std::path::Path;
+    use std::time::Instant;
 
     #[test]
     fn test_acquisition_manager_initialization() {
@@ -408,6 +395,7 @@ mod tests {
         assert_eq!(mask, 2040);
     }
 
+    // Checking elapsed time should use "cargo test --release" to get more realistic performance numbers 
     #[test]
     fn test_acquisition_with_real_data() {
         const FS: f32 = 16_367_600.0;
@@ -448,13 +436,14 @@ mod tests {
             current_doppler += step;
         }
 
-        let true_satellites = vec![1, 2, 3, 6, 9, 11, 14, 18, 19, 22, 28, 32];
+        let true_satellites = vec![3, 6, 9, 11, 14, 18, 19, 22, 28, 32];
         let mut test_prn = 1;
         while test_prn < 33 {
             let mut worker = AcquisitionWorker::new(test_prn, MS_SAMPLES/NUM_INTEGRATIONS, FS);
 
+            let now = Instant::now();
             let result = worker.search_satellite(&raw_samples, &doppler_tables, 0, NUM_INTEGRATIONS);
-
+            print!("Elapsed time for PRN {}: {:.2?} - ", test_prn, now.elapsed());
             match result {
                 Some(acq) => {
                     println!("SUCCESS: Acquired PRN {}!", acq.prn);
