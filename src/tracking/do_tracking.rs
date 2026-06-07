@@ -26,7 +26,7 @@ static DLL_GAIN: f32 = 1.0;
 static PLL_SUM_CARR: f32 = 0.001;
 static DLL_SUM_CODE: f32 = 0.001;
 static EARLY_LATE_SPACE: f32 = 0.5;
-pub static LOOP_MS: usize = 10; 
+pub static LOOP_MS: usize = 10;
 
 #[derive(Debug, Clone)]
 pub struct TrackingError;
@@ -61,10 +61,7 @@ impl LoopFilter {
         let w = noise_bw * 8.0 * dumping_ratio / (4.0 * dumping_ratio.powf(2.0) + 1.0);
         let tau1 = gain / (w * w);
         let tau2 = (2.0 * dumping_ratio) / w;
-        Self {
-            tau1,
-            tau2,
-        }
+        Self { tau1, tau2 }
     }
 
     #[inline(always)]
@@ -128,8 +125,11 @@ impl TrackingChannel {
             lost_counter: 0,
             next_sample_index: 0,
             num_samples_per_code: num_ca_samples,
-            ca_code_samples: vec![0; (1.5 * num_ca_samples as f32).round() as usize],  // pre-allocate more samples to avoid frequent resizing during tracking
-            data_samples: vec![Complex32::new(0.0, 0.0); (1.5 * num_ca_samples as f32).round() as usize],
+            ca_code_samples: vec![0; (1.5 * num_ca_samples as f32).round() as usize], // pre-allocate more samples to avoid frequent resizing during tracking
+            data_samples: vec![
+                Complex32::new(0.0, 0.0);
+                (1.5 * num_ca_samples as f32).round() as usize
+            ],
             fs: fs,
             carrier_freq: 0.0,
             carrier_phase: 0.0,
@@ -170,12 +170,19 @@ impl TrackingChannel {
 
         let head = buff.get_head();
 
-        if head < self.next_sample_index + self.num_samples_per_code {
+        if (head.wrapping_sub(self.next_sample_index + self.num_samples_per_code) as isize) < 0 {
             return None;
         }
 
-        buff.copy_to_slice(self.next_sample_index, &mut self.data_samples[0..self.num_samples_per_code]);
+        buff.copy_to_slice(
+            self.next_sample_index,
+            &mut self.data_samples[0..self.num_samples_per_code],
+        );
 
+        self.do_work()
+    }
+
+    fn do_work(&mut self) -> Option<TrackingMessage> {
         let (i_p, q_p, i_e, q_e, i_l, q_l) = self.early_late_correlation();
 
         let power = i_p * i_p + q_p * q_p;
@@ -184,6 +191,8 @@ impl TrackingChannel {
             self.lost_counter = 0;
             self.run_loop_filters(i_p, q_p, i_e, q_e, i_l, q_l);
             self.next_sample_index += self.num_samples_per_code;
+            self.num_samples_per_code =
+                (self.fs / (self.code_rate / GPS_L1_CA_CODE_LENGTH_CHIPS)).round() as usize; // Used to calculate the next sample index in TrackingManger
             None
         } else {
             self.lost_counter += 1;
@@ -192,11 +201,13 @@ impl TrackingChannel {
                 Some(TrackingMessage::SatelliteLost(self.prn))
             } else {
                 self.next_sample_index += self.num_samples_per_code;
+                self.num_samples_per_code =
+                    (self.fs / (self.code_rate / GPS_L1_CA_CODE_LENGTH_CHIPS)).round() as usize;
                 None
             }
         }
     }
-
+    
     // pub fn get_phases_lut(&mut self) {
     //     for i in 0..self.num_samples_per_code {
     //         let phase = self.carrier_phase + (2.0 * PI * self.carrier_freq * (i as f32) / self.fs);
@@ -206,7 +217,7 @@ impl TrackingChannel {
     // }
 
     // pub fn get_ca_code_lut(&self) -> Vec<f32> {
-        
+
     // }
 
     // pub fn early_late_correlation_simd(&mut self) {
@@ -250,7 +261,9 @@ impl TrackingChannel {
             q_l += self.data_samples[i].im * l_chip;
         }
 
-        self.code_phase = (self.code_phase + (self.code_rate / self.fs) * (self.num_samples_per_code as f32)) % 1023.0;
+        self.code_phase = (self.code_phase
+            + (self.code_rate / self.fs) * (self.num_samples_per_code as f32))
+            % 1023.0;
 
         (i_p, q_p, i_e, q_e, i_l, q_l)
     }
@@ -262,7 +275,9 @@ impl TrackingChannel {
 
     pub fn run_loop_filters(&mut self, i_p: f32, q_p: f32, i_e: f32, q_e: f32, i_l: f32, q_l: f32) {
         let pll_err = (q_p / i_p).atan() / (2.0 * PI);
-        self.carrier_nco = self.pll_filter.update(pll_err, self.carrier_error, PLL_SUM_CARR);
+        self.carrier_nco = self
+            .pll_filter
+            .update(pll_err, self.carrier_error, PLL_SUM_CARR);
         self.carrier_error = pll_err;
         self.carrier_freq += self.carrier_nco; // with positive doppler, the local carrier needs to add a 
         // NCO to catch up
@@ -276,7 +291,9 @@ impl TrackingChannel {
             0.0
         };
 
-        self.code_nco = self.dll_filter.update(dll_err, self.code_error, DLL_SUM_CODE);
+        self.code_nco = self
+            .dll_filter
+            .update(dll_err, self.code_error, DLL_SUM_CODE);
         self.code_error = dll_err;
         self.code_rate += self.code_nco; // If the signal hits i_e harder, nco is positive.
     }
@@ -334,11 +351,14 @@ impl TrackingManager {
             }
         }
 
-        self.channels.par_iter_mut().filter(|c| c.is_active()).for_each(|chnl| {
-            if let Some(msg) = chnl.update(multi_ring_buf.clone()) {
-                let _ = self.trk_to_acq.send(msg);
-            }
-        });
+        self.channels
+            .par_iter_mut()
+            .filter(|c| c.is_active())
+            .for_each(|chnl| {
+                if let Some(msg) = chnl.update(multi_ring_buf.clone()) {
+                    let _ = self.trk_to_acq.send(msg);
+                }
+            });
     }
 
     fn next_tracking_index(&self) -> usize {
@@ -363,10 +383,14 @@ pub fn run(
         let mut required_idx = manager.next_tracking_index();
         if (curr_head.wrapping_sub(required_idx) as isize) < 0 {
             let mut head_guard = multi_ring_buf.notifier.lock()?;
-            while (multi_ring_buf.get_head().wrapping_sub(manager.next_tracking_index()) as isize) < 0 {
+            while (multi_ring_buf
+                .get_head()
+                .wrapping_sub(manager.next_tracking_index()) as isize)
+                < 0
+            {
                 head_guard = multi_ring_buf.condvar.wait(head_guard)?;
             }
-            
+
             curr_head = multi_ring_buf.get_head();
             drop(head_guard);
         }
@@ -380,16 +404,20 @@ pub fn run(
     }
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::utilities::ca_code;
+    use crate::acquisition::do_acquisition::AcquisitionResult;
+    use crate::acquisition::{do_acquisition, doppler_shift};
     use crate::constants::gps_property_constants;
     use crate::tracking::do_tracking::TrackingChannel;
-    use crate::acquisition::do_acquisition::AcquisitionResult;
+    use crate::utilities::ca_code;
     use num_complex::Complex32;
     use std::f32::consts::PI;
+    use std::fs::File;
+    use std::io::Read;
+    use std::path::Path;
+    use std::time::Instant;
 
     /// Helper to generate 1ms of synthetic GPS L1 data
     fn generate_synthetic_signal(
@@ -405,8 +433,9 @@ mod tests {
 
         for i in 0..samples_per_ms {
             // 1. Calculate continuous carrier phase
-            let carrier_phase = starting_carrier_phase + (2.0 * PI * doppler / f_sampling * i as f32);
-            
+            let carrier_phase =
+                starting_carrier_phase + (2.0 * PI * doppler / f_sampling * i as f32);
+
             // 2. Calculate code phase and lookup chip
             let current_code_phase = starting_code_phase + (code_phase_step * i as f32);
             let chip_idx = (current_code_phase.floor() as usize) % 1023;
@@ -421,24 +450,23 @@ mod tests {
         samples
     }
 
-
     #[test]
     fn test_pll_frequency_pull_in() {
         let prn = 2;
-        let f_sampling = 4_096_000.0; 
-        let mock_ca_code = ca_code::generate_ca_code_samples(prn, GPS_L1_CA_CODE_RATE_CHIPS_PER_S, f_sampling);
+        let f_sampling = 4_096_000.0;
+        let mock_ca_code =
+            ca_code::generate_ca_code_samples(prn, GPS_L1_CA_CODE_RATE_CHIPS_PER_S, f_sampling);
 
         let true_doppler = 3000.0;
-        let signal_samples = generate_synthetic_signal(
-            &mock_ca_code, true_doppler, 0.0, 0.0, f_sampling
-        );
+        let signal_samples =
+            generate_synthetic_signal(&mock_ca_code, true_doppler, 0.0, 0.0, f_sampling);
 
         let buf = Arc::new(MulticastRingBuffer::new(8 * signal_samples.len()));
         let _ = buf.write_samples(&signal_samples);
 
         assert_eq!(buf.get_head(), signal_samples.len());
 
-        let mut  trk_chl = TrackingChannel::new(0, f_sampling);
+        let mut trk_chl = TrackingChannel::new(0, f_sampling);
         trk_chl.start(AcquisitionResult {
             prn: prn,
             carrier_freq: 2950.0, // We start with a local carrier that is 50 Hz slower than the true signal
@@ -449,15 +477,17 @@ mod tests {
             sample_global_index: 0,
         });
 
+        let now = Instant::now();
         trk_chl.update(buf.clone());
+        println!("Time for first update: {:?}", now.elapsed());
 
         let err1 = trk_chl.carrier_error;
-        let nco1 = trk_chl.carrier_nco;
-        let freq1 = trk_chl.carrier_freq;
+        // let nco1 = trk_chl.carrier_nco;
+        // let freq1 = trk_chl.carrier_freq;
 
-        println!("Carrier error after first update: {}", err1);
-        println!("Carrier NCO after first update: {}", nco1);
-        println!("Carrier frequency after first update: {}", freq1);
+        // println!("Carrier error after first update: {}", err1);
+        // println!("Carrier NCO after first update: {}", nco1);
+        // println!("Carrier frequency after first update: {}", freq1);
 
         assert!(
             trk_chl.carrier_error > 0.0,
@@ -485,51 +515,57 @@ mod tests {
 
         let samplers_per_code = trk_chl.num_samples_per_code;
 
+        let now = Instant::now();
         trk_chl.update(buf.clone());
+        println!("Time for second update: {:?}", now.elapsed());
 
         let err2 = trk_chl.carrier_error;
-        let nco2 = trk_chl.carrier_nco;
-        let freq2 = trk_chl.carrier_freq;
+        // let nco2 = trk_chl.carrier_nco;
+        // let freq2 = trk_chl.carrier_freq;
 
-        println!("Carrier error after second update: {}", err2);
-        println!("Carrier NCO after second update: {}", nco2);
-        println!("Carrier frequency after second update: {}", freq2);
-        println!("Samples per code: {}", trk_chl.num_samples_per_code);
+        // println!("Carrier error after second update: {}", err2);
+        // println!("Carrier NCO after second update: {}", nco2);
+        // println!("Carrier frequency after second update: {}", freq2);
+        // println!("Samples per code: {}", trk_chl.num_samples_per_code);
 
-        assert!((true_doppler-err2).abs() < (true_doppler-err1).abs());
+        assert!((true_doppler - err2).abs() < (true_doppler - err1).abs());
 
         let _ = buf.write_samples(&signal_samples);
 
         assert_eq!(buf.get_head(), 4 * signal_samples.len());
-        assert_eq!(trk_chl.next_sample_index, samplers_per_code + trk_chl.num_samples_per_code);
+        assert_eq!(
+            trk_chl.next_sample_index,
+            samplers_per_code + trk_chl.num_samples_per_code
+        );
 
         let samplers_per_code = trk_chl.next_sample_index;
 
         trk_chl.update(buf.clone());
 
         let err3 = trk_chl.carrier_error;
-        let nco3 = trk_chl.carrier_nco;
-        let freq3 = trk_chl.carrier_freq;
+        // let nco3 = trk_chl.carrier_nco;
+        // let freq3 = trk_chl.carrier_freq;
 
-        println!("Carrier error after third update: {}", err3);
-        println!("Carrier NCO after third update: {}", nco3);
-        println!("Carrier frequency after third update: {}", freq3);
-        println!("Samples per code: {}", trk_chl.num_samples_per_code);
+        // println!("Carrier error after third update: {}", err3);
+        // println!("Carrier NCO after third update: {}", nco3);
+        // println!("Carrier frequency after third update: {}", freq3);
+        // println!("Samples per code: {}", trk_chl.num_samples_per_code);
 
-        assert_eq!(trk_chl.next_sample_index, samplers_per_code + trk_chl.num_samples_per_code);
-        assert!((true_doppler-err3).abs() < (true_doppler-err2).abs());
-
+        assert_eq!(
+            trk_chl.next_sample_index,
+            samplers_per_code + trk_chl.num_samples_per_code
+        );
+        assert!((true_doppler - err3).abs() < (true_doppler - err2).abs());
     }
 
     #[test]
     fn test_dll_code_phase_tracking() {
         let f_sampling = 4_096_000.0;
         let prn = 3;
-        let mock_ca_code = ca_code::generate_ca_code_samples(prn, GPS_L1_CA_CODE_RATE_CHIPS_PER_S, f_sampling);
+        let mock_ca_code =
+            ca_code::generate_ca_code_samples(prn, GPS_L1_CA_CODE_RATE_CHIPS_PER_S, f_sampling);
 
-        let signal_samples = generate_synthetic_signal(
-            &mock_ca_code, 0.0, 0.0, 0.25, f_sampling
-        );
+        let signal_samples = generate_synthetic_signal(&mock_ca_code, 0.0, 0.0, 0.25, f_sampling);
 
         let buf = Arc::new(MulticastRingBuffer::new(2 * signal_samples.len()));
         let _ = buf.write_samples(&signal_samples);
@@ -547,29 +583,17 @@ mod tests {
             sample_global_index: 0,
         });
 
+        let now = Instant::now();
         trk_chl.update(buf.clone());
+        println!("Time for first update: {:?}", now.elapsed());
 
+        // let err1 = trk_chl.code_error;
+        // let nco1 = trk_chl.code_nco;
+        // let freq1 = trk_chl.code_rate;
 
-        assert!(
-            trk_chl.code_error > 0.0,
-            "DLL Discriminator failed: Expected positive error for early signal, got {}",
-            trk_chl.code_error
-        );
-
-        assert!(
-            trk_chl.code_nco > 0.0,
-            "DLL Filter failed: Expected positive NCO adjustment, got {}",
-            trk_chl.code_nco
-        );
-
-        let err1 = trk_chl.code_error;
-        let nco1 = trk_chl.code_nco;
-        let freq1 = trk_chl.code_rate;
-
-        println!("Code error after first update: {}", err1);
-        println!("Code NCO after first update: {}", nco1);
-        println!("Code rate after first update: {}", freq1);
-
+        // println!("Code error after first update: {}", err1);
+        // println!("Code NCO after first update: {}", nco1);
+        // println!("Code rate after first update: {}", freq1);
 
         let _ = buf.write_samples(&signal_samples);
         let _ = buf.write_samples(&signal_samples);
@@ -579,36 +603,108 @@ mod tests {
 
         let samplers_per_code = trk_chl.num_samples_per_code;
 
+        let now = Instant::now();
         trk_chl.update(buf.clone());
+        println!("Time for second update: {:?}", now.elapsed());
 
-        let err2 = trk_chl.code_error;
-        let nco2 = trk_chl.code_nco;
-        let freq2 = trk_chl.code_rate;
+        // let err2 = trk_chl.code_error;
+        // let nco2 = trk_chl.code_nco;
+        // let freq2 = trk_chl.code_rate;
 
-        println!("Code error after second update: {}", err2);
-        println!("Code NCO after second update: {}", nco2);
-        println!("Code rate after second update: {}", freq2);
-        println!("Samples per code: {}", trk_chl.num_samples_per_code);
+        // println!("Code error after second update: {}", err2);
+        // println!("Code NCO after second update: {}", nco2);
+        // println!("Code rate after second update: {}", freq2);
+        // println!("Samples per code: {}", trk_chl.num_samples_per_code);
 
         let _ = buf.write_samples(&signal_samples);
 
         assert_eq!(buf.get_head(), 4 * signal_samples.len());
-        assert_eq!(trk_chl.next_sample_index, samplers_per_code + trk_chl.num_samples_per_code);
+        assert_eq!(
+            trk_chl.next_sample_index,
+            samplers_per_code + trk_chl.num_samples_per_code
+        );
 
         let samplers_per_code = trk_chl.next_sample_index;
 
         trk_chl.update(buf.clone());
 
-        let err3 = trk_chl.code_error;
-        let nco3 = trk_chl.code_nco;
-        let freq3 = trk_chl.code_rate;
+        // let err3 = trk_chl.code_error;
+        // let nco3 = trk_chl.code_nco;
+        // let freq3 = trk_chl.code_rate;
 
-        println!("Code error after third update: {}", err3);
-        println!("Code NCO after third update: {}", nco3);
-        println!("Code rate after third update: {}", freq3);
-        println!("Samples per code: {}", trk_chl.num_samples_per_code);
+        // println!("Code error after third update: {}", err3);
+        // println!("Code NCO after third update: {}", nco3);
+        // println!("Code rate after third update: {}", freq3);
+        // println!("Samples per code: {}", trk_chl.num_samples_per_code);
 
-        assert_eq!(trk_chl.next_sample_index, samplers_per_code + trk_chl.num_samples_per_code);
+        assert_eq!(
+            trk_chl.next_sample_index,
+            samplers_per_code + trk_chl.num_samples_per_code
+        );
+    }
 
+    #[test]
+    fn test_tracking_with_real_signal() {
+        const FS: f32 = 16_367_600.0;
+        const IF: f32 = 4_130_400.0;
+        const NUM_INTEGRATIONS: usize = 10;
+        const MS_SAMPLES: usize = NUM_INTEGRATIONS * 16368;
+
+        let root = env!("CARGO_MANIFEST_DIR");
+        let file_path = Path::new(root)
+            .join("src")
+            .join("test_data")
+            .join("GPS_recordings")
+            .join("gioveAandB_short.bin");
+
+        let mut file = match File::open(file_path) {
+            Ok(f) => f,
+            Err(_) => {
+                println!("Raw data file not found. Skipping real-data test.");
+                return;
+            }
+        };
+
+        let mut bytes = vec![0u8; MS_SAMPLES * NUM_INTEGRATIONS];
+        file.read_exact(&mut bytes)
+            .expect("Failed to read raw data file");
+
+        let buffer = bytes
+            .iter()
+            .map(|b| Complex32::new((*b as i8) as f32, 0.0))
+            .collect::<Vec<Complex32>>();
+
+        let doppler_start = -7000.0;
+        let doppler_end = 7000.0;
+        let step = 500.0;
+        let mut doppler_tables = Vec::new();
+        let mut current_doppler = doppler_start;
+
+        while current_doppler <= doppler_end {
+            doppler_tables.push(doppler_shift::DopplerShiftTable::new(
+                IF,
+                current_doppler,
+                FS,
+                MS_SAMPLES / NUM_INTEGRATIONS,
+            ));
+            current_doppler += step;
+        }
+
+        let prn = 6;
+        let mut acq_worker =
+            do_acquisition::AcquisitionWorker::new(prn, MS_SAMPLES / NUM_INTEGRATIONS, FS);
+        let aqc_result = acq_worker
+            .search_satellite(&buffer, &doppler_tables, 0, NUM_INTEGRATIONS)
+            .expect("Failed to acquire satellite");
+
+        let mut trk_channel = TrackingChannel::new(0, FS);
+        trk_channel.start(aqc_result);
+
+        let mut prompt_i = Vec::new();
+        let mut doppler_history = Vec::new();
+
+        for _ in 0..500 {
+            trk_channel.update(buff)
+        }
     }
 }

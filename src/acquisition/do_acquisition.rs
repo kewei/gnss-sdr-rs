@@ -5,8 +5,7 @@ use crate::constants::gps_property_constants::{
 use crate::tracking::do_tracking::TrackingMessage;
 use crate::utilities::ca_code::generate_ca_code_samples;
 use crate::utilities::multicast_ring_buffer::MulticastRingBuffer;
-use crate::utilities::help_fn::convert_i8_to_complex32;
-use num::Complex;
+use num_complex::Complex32;
 use crossbeam_channel::{Sender, Receiver};
 use rayon::prelude::*;
 use rustfft::{Fft, FftPlanner};
@@ -121,19 +120,19 @@ pub struct AcquisitionWorker {
     fft: Arc<dyn Fft<f32>>,
     ifft: Arc<dyn Fft<f32>>,
     fft_size: usize,
-    scratch_buf: Vec<Complex<f32>>,
+    scratch_buf: Vec<Complex32>,
     freq_sampling_hz: f32,
     // doppler_table: &DopplerShiftTable,
-    ca_code_samples_fft: Vec<Complex<f32>>,
-    result_buf: Vec<Complex<f32>>,
+    ca_code_samples_fft: Vec<Complex32>,
+    result_buf: Vec<Complex32>,
 }
 
 impl AcquisitionWorker {
-    fn new(prn: u8, fft_size: usize, freq_sampling_hz: f32) -> Self {
+    pub fn new(prn: u8, fft_size: usize, freq_sampling_hz: f32) -> Self {
         let mut planner = FftPlanner::new();
         let ca_code_samples =
             generate_ca_code_samples(prn, GPS_L1_CA_CODE_RATE_CHIPS_PER_S, freq_sampling_hz);
-        let mut ca_code_samples_fft = convert_i8_to_complex32(ca_code_samples);
+        let mut ca_code_samples_fft: Vec<Complex32> = ca_code_samples.into_iter().map(|x| Complex32::new(x as f32, 0.0)).collect();
         planner
             .plan_fft_forward(fft_size)
             .process(&mut ca_code_samples_fft);
@@ -148,17 +147,17 @@ impl AcquisitionWorker {
             fft: fft,
             ifft: ifft,
             fft_size: fft_size,
-            scratch_buf: vec![Complex::new(0.0, 0.0); scratch_len],
+            scratch_buf: vec![Complex32::new(0.0, 0.0); scratch_len],
             freq_sampling_hz: freq_sampling_hz,
             // doppler_table: doppler_table.as_slice(),
             ca_code_samples_fft: ca_code_samples_fft,
-            result_buf: vec![Complex::new(0.0, 0.0); fft_size],
+            result_buf: vec![Complex32::new(0.0, 0.0); fft_size],
         }
     }
 
-    fn search_satellite(
+    pub fn search_satellite(
         &mut self,
-        samples_chunk: &[Complex<f32>],
+        samples_chunk: &[Complex32],
         doppler_table: &[DopplerShiftTable],
         local_tail: usize,
         num_integrations: usize,
@@ -272,7 +271,7 @@ pub fn run(
         .collect::<Vec<AcquisitionWorker>>();
 
     let samples_integration_size = fft_size * LONG_SAMPLES_LENGTH;
-    let mut chunk_samples = vec![Complex::new(0.0, 0.0); samples_integration_size];
+    let mut chunk_samples = vec![Complex32::new(0.0, 0.0); samples_integration_size];
     let mut last_run = std::time::Instant::now();
 
     loop {
@@ -297,8 +296,8 @@ pub fn run(
 
         let head = multi_buffer.get_head();
 
-        if head >= samples_integration_size {
-            let local_tail = head - samples_integration_size;
+        if (head.wrapping_sub(samples_integration_size) as isize) >=0 {
+            let local_tail = head.wrapping_sub(samples_integration_size);
             multi_buffer.copy_to_slice(local_tail, &mut chunk_samples);
             let results: Vec<AcquisitionResult> = workers
                 .par_iter_mut()

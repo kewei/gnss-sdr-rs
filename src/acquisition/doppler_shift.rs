@@ -10,13 +10,14 @@ pub struct DopplerShiftTable {
 impl DopplerShiftTable {
     pub fn new(f_if: f32, doppler_freq_hz: f32, fs: f32, num_samples: usize) -> Self {
         let mut table = Vec::with_capacity(num_samples);
-        let phase_step = 2.0 * std::f32::consts::PI * (f_if + doppler_freq_hz) / fs;
+        let carr_freq = f_if + doppler_freq_hz;
+        let phase_step = 2.0 * std::f32::consts::PI * carr_freq / fs;
 
         for i in 0..num_samples {
             let phase = i as f32 * phase_step;
             table.push(Complex32::new(phase.cos(), -phase.sin())); // Negative for downconversion
         }
-        Self { doppler_freq_hz, table }
+        Self { doppler_freq_hz: carr_freq, table }
     }
 }
 
