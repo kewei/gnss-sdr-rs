@@ -125,11 +125,8 @@ impl TrackingChannel {
             lost_counter: 0,
             next_sample_index: 0,
             num_samples_per_code: num_ca_samples,
-            ca_code_samples: vec![0; (1.5 * num_ca_samples as f32).round() as usize], // pre-allocate more samples to avoid frequent resizing during tracking
-            data_samples: vec![
-                Complex32::new(0.0, 0.0);
-                (1.5 * num_ca_samples as f32).round() as usize
-            ],
+            ca_code_samples: Vec::with_capacity((1.5 * num_ca_samples as f32).round() as usize), // pre-allocate more samples to avoid frequent resizing during tracking
+            data_samples: Vec::with_capacity((1.5 * num_ca_samples as f32).round() as usize),
             fs: fs,
             carrier_freq: 0.0,
             carrier_phase: 0.0,
@@ -139,8 +136,8 @@ impl TrackingChannel {
             code_error: 0.0,
             code_nco: 0.0,
             code_rate: GPS_L1_CA_CODE_RATE_CHIPS_PER_S,
-            cos_p: vec![0.0; (1.5 * num_ca_samples as f32).round() as usize],
-            sin_p: vec![0.0; (1.5 * num_ca_samples as f32).round() as usize],
+            cos_p: Vec::with_capacity((1.5 * num_ca_samples as f32).round() as usize),
+            sin_p: Vec::with_capacity((1.5 * num_ca_samples as f32).round() as usize),
             i_prompt: 0.0,
             q_prompt: 0.0,
             pll_filter: LoopFilter::new(PLL_NOISE_BANDWIDTH, PLL_DUMPING_RATIO, PLL_GAIN),
@@ -149,7 +146,6 @@ impl TrackingChannel {
     }
 
     pub fn start(&mut self, result: AcquisitionResult) {
-        self.ca_code_samples = generate_ca_code_samples(result.prn, self.code_rate, self.fs);
         self.prn = result.prn;
         self.carrier_freq = result.carrier_freq;
         self.code_phase = result.code_phase_chips;
@@ -182,6 +178,7 @@ impl TrackingChannel {
         self.do_work()
     }
 
+    #[inline(always)]
     fn do_work(&mut self) -> Option<TrackingMessage> {
         let (i_p, q_p, i_e, q_e, i_l, q_l) = self.early_late_correlation();
 
@@ -193,16 +190,19 @@ impl TrackingChannel {
             self.next_sample_index += self.num_samples_per_code;
             self.num_samples_per_code =
                 (self.fs / (self.code_rate / GPS_L1_CA_CODE_LENGTH_CHIPS)).round() as usize; // Used to calculate the next sample index in TrackingManger
+            self.free_data();
             None
         } else {
             self.lost_counter += 1;
             if self.lost_counter >= MAX_LOST_EPOCHS {
                 self.reset();
+                self.free_data();
                 Some(TrackingMessage::SatelliteLost(self.prn))
             } else {
                 self.next_sample_index += self.num_samples_per_code;
                 self.num_samples_per_code =
                     (self.fs / (self.code_rate / GPS_L1_CA_CODE_LENGTH_CHIPS)).round() as usize;
+                self.free_data();
                 None
             }
         }
@@ -265,6 +265,8 @@ impl TrackingChannel {
             + (self.code_rate / self.fs) * (self.num_samples_per_code as f32))
             % 1023.0;
 
+        self.i_prompt = i_p;
+        self.q_prompt = q_p;
         (i_p, q_p, i_e, q_e, i_l, q_l)
     }
 
@@ -296,6 +298,13 @@ impl TrackingChannel {
             .update(dll_err, self.code_error, DLL_SUM_CODE);
         self.code_error = dll_err;
         self.code_rate += self.code_nco; // If the signal hits i_e harder, nco is positive.
+    }
+
+    fn free_data(&mut self) {
+        self.data_samples.clear();
+        self.ca_code_samples.clear();
+        self.cos_p.clear();
+        self.sin_p.clear();
     }
 
     pub fn reset(&mut self) {
@@ -416,6 +425,7 @@ mod tests {
     use std::f32::consts::PI;
     use std::fs::File;
     use std::io::Read;
+    use std::os::unix::fs::FileExt;
     use std::path::Path;
     use std::time::Instant;
 
@@ -697,14 +707,40 @@ mod tests {
             .search_satellite(&buffer, &doppler_tables, 0, NUM_INTEGRATIONS)
             .expect("Failed to acquire satellite");
 
+        let mut offset = aqc_result.code_phase_samples;
         let mut trk_channel = TrackingChannel::new(0, FS);
         trk_channel.start(aqc_result);
 
         let mut prompt_i = Vec::new();
+        let mut prompt_q = Vec::new();
         let mut doppler_history = Vec::new();
 
-        for _ in 0..500 {
-            trk_channel.update(buff)
+        for _ in 0..100 {
+            let mut bytes = vec![0u8; trk_channel.num_samples_per_code];
+            file.read_exact_at(&mut bytes, offset as u64)
+                .expect("Failed to read raw data file");
+
+            let buffer = bytes
+                .iter()
+                .map(|b| Complex32::new((*b as i8) as f32, 0.0))
+                .collect::<Vec<Complex32>>();
+            trk_channel.data_samples = buffer;
+            trk_channel.ca_code_samples = generate_ca_code_samples(trk_channel.prn, trk_channel.code_rate, trk_channel.fs);
+            trk_channel.num_samples_per_code = trk_channel.ca_code_samples.len();
+
+            trk_channel.do_work();
+            
+            assert!(trk_channel.i_prompt.powi(2) + trk_channel.q_prompt.powi(2) > LOCK_THRESHOLD, "Tracking lost: Prompt power below threshold");
+
+            prompt_i.push(trk_channel.i_prompt);
+            prompt_q.push(trk_channel.q_prompt);
+            doppler_history.push(trk_channel.carrier_freq - IF);
+
+            offset += trk_channel.num_samples_per_code;
         }
+
+        println!("prompt I: {:?}", prompt_i);
+        println!("prompt Q: {:?}", prompt_q);
+        println!("carrier frequency (should be close to IF): {:?}", doppler_history);
     }
 }
