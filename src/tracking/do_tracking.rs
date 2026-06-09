@@ -149,6 +149,7 @@ impl TrackingChannel {
         self.prn = result.prn;
         self.carrier_freq = result.carrier_freq;
         self.code_phase = result.code_phase_chips;
+        self.next_sample_index = result.sample_global_index;
         self.state = ChannelState::Tracking(result.prn);
     }
 
@@ -707,6 +708,12 @@ mod tests {
             .search_satellite(&buffer, &doppler_tables, 0, NUM_INTEGRATIONS)
             .expect("Failed to acquire satellite");
 
+        println!("SUCCESS: Acquired PRN {}!", aqc_result.prn);
+        println!("  Doppler Shift:  {} Hz", aqc_result.carrier_freq);
+        println!("  Code Phase:     {} samples", aqc_result.code_phase_samples);
+        println!("  Code Phase:     {} chips", aqc_result.code_phase_chips);
+        println!("  Relative Power: {}", aqc_result.mag_relative);
+
         let mut offset = aqc_result.code_phase_samples;
         let mut trk_channel = TrackingChannel::new(0, FS);
         trk_channel.start(aqc_result);
@@ -727,6 +734,7 @@ mod tests {
             trk_channel.data_samples = buffer;
             trk_channel.ca_code_samples = generate_ca_code_samples(trk_channel.prn, trk_channel.code_rate, trk_channel.fs);
             trk_channel.num_samples_per_code = trk_channel.ca_code_samples.len();
+            offset += trk_channel.num_samples_per_code;
 
             trk_channel.do_work();
             
@@ -735,8 +743,6 @@ mod tests {
             prompt_i.push(trk_channel.i_prompt);
             prompt_q.push(trk_channel.q_prompt);
             doppler_history.push(trk_channel.carrier_freq - IF);
-
-            offset += trk_channel.num_samples_per_code;
         }
 
         println!("prompt I: {:?}", prompt_i);
