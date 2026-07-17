@@ -8,6 +8,7 @@ use crate::utilities::multicast_ring_buffer::MulticastRingBuffer;
 use crossbeam_channel::{Receiver, Sender};
 use num_complex::Complex32;
 use rayon::iter::{IntoParallelRefMutIterator, ParallelIterator};
+use signal_hook::iterator::exfiltrator::raw;
 use std::error::Error;
 use std::f32::consts::PI;
 use std::sync::Arc;
@@ -18,13 +19,18 @@ const MAX_LOST_EPOCHS: u32 = 20; // ms
 const NUM_OF_CHANNELS: usize = 15;
 static DLL_DUMPING_RATIO: f32 = 0.7;
 static PLL_DUMPING_RATIO: f32 = 0.7;
-static PLL_GAIN: f32 = 0.25;
+static FLL_DUMPING_RATIO: f32 = 0.7;
 static DLL_NOISE_BANDWIDTH: f32 = 2.0;
 static PLL_NOISE_BANDWIDTH: f32 = 25.0;
+static FLL_NOISE_BANDWIDTH: f32 = 50.0;
+static PLL_GAIN: f32 = 0.25;
 static DLL_GAIN: f32 = 1.0;
+static FLL_GAIN: f32 = 0.05;
 // Summation interval
 static PLL_SUM_CARR: f32 = 0.001;
 static DLL_SUM_CODE: f32 = 0.001;
+static FLL_SUM_CARR: f32 = 0.001;
+static FLL_DURATION: usize = 200;  // ms
 static EARLY_LATE_SPACE: f32 = 0.5;
 pub static LOOP_MS: usize = 10;
 
@@ -109,9 +115,16 @@ pub struct TrackingChannel {
 
     pub i_prompt: f32,
     pub q_prompt: f32,
+    pub i_prompt_prev: f32,
+    pub q_prompt_prev: f32,
 
     pub pll_filter: LoopFilter,
     pub dll_filter: LoopFilter,
+    // pub fll_filter: LoopFilter,
+
+    fll_mode: bool, // true: FLL for the first 100-500ms, false: PLL
+    smoothed_freq_error: f32,
+    lock_counter: u32,
 }
 
 impl TrackingChannel {
@@ -140,15 +153,21 @@ impl TrackingChannel {
             sin_p: Vec::with_capacity((1.5 * num_ca_samples as f32).round() as usize),
             i_prompt: 0.0,
             q_prompt: 0.0,
+            i_prompt_prev: 0.0,
+            q_prompt_prev: 0.0,
             pll_filter: LoopFilter::new(PLL_NOISE_BANDWIDTH, PLL_DUMPING_RATIO, PLL_GAIN),
             dll_filter: LoopFilter::new(DLL_NOISE_BANDWIDTH, DLL_DUMPING_RATIO, DLL_GAIN),
+            // fll_filter: LoopFilter::new(FLL_NOISE_BANDWIDTH, FLL_DUMPING_RATIO, FLL_GAIN),
+            fll_mode: true,
+            smoothed_freq_error: 0.0,
+            lock_counter: 0,
         }
     }
 
     pub fn start(&mut self, result: AcquisitionResult) {
         self.prn = result.prn;
         self.carrier_freq = result.carrier_freq;
-        self.code_phase = result.code_phase_chips;
+        // self.code_phase = result.code_phase_chips;
         self.next_sample_index = result.sample_global_index;
         self.state = ChannelState::Tracking(result.prn);
     }
@@ -272,11 +291,45 @@ impl TrackingChannel {
     }
 
     pub fn get_ca_chip(&self, phase: f32) -> f32 {
-        let idx = (phase.floor() as usize) % 1023;
+        let phase_wrapped = ((phase % 1023.0) + 1023.0) % 1023.0;
+        let idx = (phase_wrapped.floor() as usize) % 1023;
         GPS_CA_CODE_32_PRN[self.prn as usize][idx] as f32
     }
 
     pub fn run_loop_filters(&mut self, i_p: f32, q_p: f32, i_e: f32, q_e: f32, i_l: f32, q_l: f32) {
+        if self.fll_mode {
+            let corss_mult = self.i_prompt_prev * q_p - self.q_prompt_prev * i_p;
+            let dot_mult = self.i_prompt_prev * i_p + self.q_prompt_prev * q_p;
+            let raw_fll_err =  if dot_mult.abs() > 1e-6 {
+                (corss_mult / dot_mult).atan() / (2.0 * PI * FLL_SUM_CARR)
+            } else {
+                0.0
+            };
+            // Moving average to smooth the frequency error, and a lock counter to determine when to switch from FLL to PLL
+            self.smoothed_freq_error = 0.05 * raw_fll_err.abs() + 0.95 * self.smoothed_freq_error;
+            if self.smoothed_freq_error < 10.0 {
+                self.lock_counter += 1;
+            } else {
+                self.lock_counter = 0;
+            }
+
+            if self.lock_counter >= 20 {
+                self.fll_mode = false;
+                self.carrier_error = 0.0; // Reset carrier error when switching to PLL
+            }
+
+            // self.carrier_nco = self
+            //     .fll_filter
+            //     .update(raw_fll_err, self.carrier_error, FLL_SUM_CARR);
+
+            self.carrier_error = raw_fll_err;
+            // self.carrier_freq += self.carrier_nco; 
+            self.carrier_freq += raw_fll_err * FLL_GAIN;
+
+            self.i_prompt_prev = i_p;
+            self.q_prompt_prev = q_p;
+            println!("FLL Mode: Carrier Error: {}, smoothed freq error: {}", self.carrier_error, self.smoothed_freq_error);
+        } else {
         let pll_err = (q_p / i_p).atan() / (2.0 * PI);
         self.carrier_nco = self
             .pll_filter
@@ -284,6 +337,7 @@ impl TrackingChannel {
         self.carrier_error = pll_err;
         self.carrier_freq += self.carrier_nco; // with positive doppler, the local carrier needs to add a 
         // NCO to catch up
+        }
 
         let pow_e = (i_e.powi(2) + q_e.powi(2)).sqrt();
         let pow_l = (i_l.powi(2) + q_l.powi(2)).sqrt();
@@ -323,6 +377,12 @@ impl TrackingChannel {
         self.code_rate = 0.0;
         self.i_prompt = 0.0;
         self.q_prompt = 0.0;
+        self.pll_filter = LoopFilter::new(PLL_NOISE_BANDWIDTH, PLL_DUMPING_RATIO, PLL_GAIN);
+        self.dll_filter = LoopFilter::new(DLL_NOISE_BANDWIDTH, DLL_DUMPING_RATIO, DLL_GAIN);
+        // self.fll_filter = LoopFilter::new(FLL_NOISE_BANDWIDTH, FLL_DUMPING_RATIO, FLL_GAIN);
+        self.fll_mode = true;
+        self.smoothed_freq_error = 0.0;
+        self.lock_counter = 0;
     }
 }
 
@@ -484,7 +544,6 @@ mod tests {
             code_phase_samples: 0,
             code_phase_chips: 0.0,
             fs: f_sampling,
-            mag_relative: 10.0,
             sample_global_index: 0,
         });
 
@@ -590,7 +649,6 @@ mod tests {
             code_phase_samples: 0,
             code_phase_chips: 0.0, // Our local code starts perfectly aligned, but the real signal is early
             fs: f_sampling,
-            mag_relative: 10.0,
             sample_global_index: 0,
         });
 
@@ -658,7 +716,7 @@ mod tests {
     fn test_tracking_with_real_signal() {
         const FS: f32 = 16_367_600.0;
         const IF: f32 = 4_130_400.0;
-        const NUM_INTEGRATIONS: usize = 10;
+        const NUM_INTEGRATIONS: usize = 11;
         const MS_SAMPLES: usize = NUM_INTEGRATIONS * 16368;
 
         let root = env!("CARGO_MANIFEST_DIR");
@@ -704,15 +762,16 @@ mod tests {
         let prn = 6;
         let mut acq_worker =
             do_acquisition::AcquisitionWorker::new(prn, MS_SAMPLES / NUM_INTEGRATIONS, FS);
-        let aqc_result = acq_worker
+        let mut aqc_result = acq_worker
             .search_satellite(&buffer, &doppler_tables, 0, NUM_INTEGRATIONS)
             .expect("Failed to acquire satellite");
+        aqc_result.carrier_freq = 4127095.0;
+        aqc_result.code_phase_samples = 7825;
 
         println!("SUCCESS: Acquired PRN {}!", aqc_result.prn);
         println!("  Doppler Shift:  {} Hz", aqc_result.carrier_freq);
         println!("  Code Phase:     {} samples", aqc_result.code_phase_samples);
         println!("  Code Phase:     {} chips", aqc_result.code_phase_chips);
-        println!("  Relative Power: {}", aqc_result.mag_relative);
 
         let mut offset = aqc_result.code_phase_samples;
         let mut trk_channel = TrackingChannel::new(0, FS);
@@ -721,32 +780,35 @@ mod tests {
         let mut prompt_i = Vec::new();
         let mut prompt_q = Vec::new();
         let mut doppler_history = Vec::new();
+        let mut code_rate_history = Vec::new();
 
-        for _ in 0..100 {
+        trk_channel.ca_code_samples = generate_ca_code_samples(trk_channel.prn, trk_channel.code_rate, trk_channel.fs);
+        for _ in 0..10 {
             let mut bytes = vec![0u8; trk_channel.num_samples_per_code];
             file.read_exact_at(&mut bytes, offset as u64)
                 .expect("Failed to read raw data file");
 
-            let buffer = bytes
+            trk_channel.data_samples = bytes
                 .iter()
                 .map(|b| Complex32::new((*b as i8) as f32, 0.0))
-                .collect::<Vec<Complex32>>();
-            trk_channel.data_samples = buffer;
-            trk_channel.ca_code_samples = generate_ca_code_samples(trk_channel.prn, trk_channel.code_rate, trk_channel.fs);
-            trk_channel.num_samples_per_code = trk_channel.ca_code_samples.len();
-            offset += trk_channel.num_samples_per_code;
+                .collect::<Vec<Complex32>>();            
 
+            offset += trk_channel.num_samples_per_code;
             trk_channel.do_work();
+
+            trk_channel.ca_code_samples = generate_ca_code_samples(trk_channel.prn, trk_channel.code_rate, trk_channel.fs);
             
             assert!(trk_channel.i_prompt.powi(2) + trk_channel.q_prompt.powi(2) > LOCK_THRESHOLD, "Tracking lost: Prompt power below threshold");
 
             prompt_i.push(trk_channel.i_prompt);
             prompt_q.push(trk_channel.q_prompt);
             doppler_history.push(trk_channel.carrier_freq - IF);
+            code_rate_history.push(trk_channel.code_rate);
         }
 
         println!("prompt I: {:?}", prompt_i);
         println!("prompt Q: {:?}", prompt_q);
         println!("carrier frequency (should be close to IF): {:?}", doppler_history);
+        println!("code rate (should be close to {}MHz): {:?}MHz", GPS_L1_CA_CODE_RATE_CHIPS_PER_S / 1_000_000.0, code_rate_history .iter().map(|r| r / 1_000_000.0).collect::<Vec<f32>>());
     }
 }
