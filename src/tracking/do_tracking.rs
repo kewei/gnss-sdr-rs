@@ -8,7 +8,6 @@ use crate::utilities::multicast_ring_buffer::MulticastRingBuffer;
 use crossbeam_channel::{Receiver, Sender};
 use num_complex::Complex32;
 use rayon::iter::{IntoParallelRefMutIterator, ParallelIterator};
-use signal_hook::iterator::exfiltrator::raw;
 use std::error::Error;
 use std::f32::consts::PI;
 use std::sync::Arc;

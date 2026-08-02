@@ -175,8 +175,7 @@ impl AcquisitionWorker {
             accumulated_power.fill(0.0);
 
             for c in 0..num_integrations {
-                let offset = c * self.fft_size;
-                let chunk = &samples_chunk[offset..offset + self.fft_size];
+                let chunk = &samples_chunk[c * self.fft_size..c * self.fft_size + self.fft_size];
                 apply_doppler_shift(
                     chunk,
                     doppler,
@@ -184,14 +183,14 @@ impl AcquisitionWorker {
                 );
                 self.fft.process_with_scratch(&mut self.result_buf, &mut self.scratch_buf);
 
-                for i in 0..self.fft_size {
-                    self.result_buf[i] *= self.ca_code_samples_fft[i].conj();
+                for (res, code) in self.result_buf.iter_mut().zip(&self.ca_code_samples_fft) {
+                    *res *= code.conj();
                 }
 
                 self.ifft.process_with_scratch(&mut self.result_buf, &mut self.scratch_buf);
 
-                for (idx, val) in self.result_buf.iter().enumerate() {
-                    accumulated_power[idx] += val.norm_sqr();
+                for (acc, val) in accumulated_power.iter_mut().zip(&self.result_buf) {
+                    *acc += val.norm_sqr();
                 }
             }
 
