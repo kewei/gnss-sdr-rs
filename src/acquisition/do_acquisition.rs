@@ -6,7 +6,7 @@ use crate::tracking::do_tracking::TrackingMessage;
 use crate::utilities::ca_code::generate_ca_code_samples_blocks;
 use crate::utilities::multicast_ring_buffer::MulticastRingBuffer;
 use crossbeam_channel::{Receiver, Sender};
-use num_complex::{Complex32, ComplexFloat};
+use num_complex::Complex32;
 use rayon::prelude::*;
 use rustfft::{Fft, FftDirection, FftPlanner, algorithm::Radix4};
 use std::collections::HashSet;
@@ -175,9 +175,7 @@ impl AcquisitionWorker {
         num_integrations: usize,
     ) -> Option<AcquisitionResult> {
         let mut global_max_val: f32 = 0.0;
-        let mut best_carr_freq: f32 = 0.0;
         let mut best_code_phase: usize = 0;
-        // let mut best_power_results = vec![0.0; self.fft_size];
         let mut accumulated_power = vec![0.0; self.fft_size];
         let mut best_power_results = vec![0.0; self.fft_size];
 
@@ -214,7 +212,6 @@ impl AcquisitionWorker {
                     })?;
             if *local_max > global_max_val {
                 global_max_val = *local_max;
-                best_carr_freq = doppler.carr_freq_hz;
                 best_code_phase = local_best_phase;
                 best_power_results.copy_from_slice(&accumulated_power);
             }
@@ -293,6 +290,7 @@ impl AcquisitionWorker {
         return Some(-frequency);
     }
 
+    #[allow(dead_code)]
     fn fine_doppler_search(
         &self,
         data_samples: &[Complex32],
