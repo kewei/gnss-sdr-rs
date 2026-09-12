@@ -3,19 +3,19 @@ use crate::constants::gps_property_constants::{
     GPS_L1_CA_CODE_LENGTH_CHIPS, GPS_L1_CA_CODE_RATE_CHIPS_PER_S,
 };
 use crate::tracking::do_tracking::TrackingMessage;
-use crate::utilities::ca_code::generate_ca_code_samples;
+use crate::utilities::ca_code::generate_ca_code_samples_blocks;
 use crate::utilities::multicast_ring_buffer::MulticastRingBuffer;
-use num_complex::Complex32;
-use crossbeam_channel::{Sender, Receiver};
+use crossbeam_channel::{Receiver, Sender};
+use num_complex::{Complex32, ComplexFloat};
 use rayon::prelude::*;
-use rustfft::{Fft, FftPlanner};
+use rustfft::{Fft, FftDirection, FftPlanner, algorithm::Radix4};
 use std::collections::HashSet;
 use std::error::Error;
+use std::f32::consts::PI;
 use std::fmt;
 use std::simd::f32x8;
 use std::simd::num::SimdFloat;
 use std::sync::{Arc, PoisonError};
-use std::f32::consts::PI;
 
 // const FFT_LENGTH_MS: u8 = 1;
 const FREQ_SEARCH_ACQUISITION_HZ: f32 = 14e3; // Hz
@@ -132,14 +132,23 @@ pub struct AcquisitionWorker {
 impl AcquisitionWorker {
     pub fn new(prn: u8, fft_size: usize, freq_sampling_hz: f32) -> Self {
         let mut planner = FftPlanner::new();
-        let ca_code_samples =
-            generate_ca_code_samples(prn, GPS_L1_CA_CODE_RATE_CHIPS_PER_S, freq_sampling_hz);
-        let mut ca_code_samples_fft: Vec<Complex32> = ca_code_samples.clone().into_iter().map(|x| Complex32::new(x as f32, 0.0)).collect();
-        planner
-            .plan_fft_forward(fft_size)
-            .process(&mut ca_code_samples_fft);
         let fft = planner.plan_fft_forward(fft_size);
         let ifft = planner.plan_fft_inverse(fft_size);
+        let ca_code_samples = generate_ca_code_samples_blocks(
+            prn,
+            GPS_L1_CA_CODE_RATE_CHIPS_PER_S,
+            freq_sampling_hz,
+            LONG_SAMPLES_LENGTH,
+        );
+        let mut ca_code_samples_fft: Vec<Complex32> = ca_code_samples
+            .clone()
+            .into_iter()
+            .map(|x| Complex32::new(x as f32, 0.0))
+            .collect();
+        for chunk in ca_code_samples_fft.chunks_exact_mut(fft_size) {
+            fft.process(chunk);
+        }
+
         let fft_scratch_len = fft.get_inplace_scratch_len();
         let ifft_scratch_len = ifft.get_inplace_scratch_len();
         let scratch_len = fft_scratch_len.max(ifft_scratch_len);
@@ -166,68 +175,70 @@ impl AcquisitionWorker {
         num_integrations: usize,
     ) -> Option<AcquisitionResult> {
         let mut global_max_val: f32 = 0.0;
-        let mut best_doppler_freq: f32 = 0.0;
+        let mut best_carr_freq: f32 = 0.0;
         let mut best_code_phase: usize = 0;
-        let mut best_power_results = vec![0.0; self.fft_size];
+        // let mut best_power_results = vec![0.0; self.fft_size];
         let mut accumulated_power = vec![0.0; self.fft_size];
+        let mut best_power_results = vec![0.0; self.fft_size];
 
         for doppler in doppler_table.iter() {
             accumulated_power.fill(0.0);
 
             for c in 0..num_integrations {
                 let chunk = &samples_chunk[c * self.fft_size..c * self.fft_size + self.fft_size];
-                apply_doppler_shift(
-                    chunk,
-                    doppler,
-                    &mut self.result_buf,
-                );
-                self.fft.process_with_scratch(&mut self.result_buf, &mut self.scratch_buf);
+                apply_doppler_shift(chunk, doppler, &mut self.result_buf);
+                self.fft
+                    .process_with_scratch(&mut self.result_buf, &mut self.scratch_buf);
 
-                for (res, code) in self.result_buf.iter_mut().zip(&self.ca_code_samples_fft) {
+                for (res, code) in self.result_buf.iter_mut().zip(
+                    &self.ca_code_samples_fft[c * self.fft_size..c * self.fft_size + self.fft_size],
+                ) {
                     *res *= code.conj();
                 }
 
-                self.ifft.process_with_scratch(&mut self.result_buf, &mut self.scratch_buf);
+                self.ifft
+                    .process_with_scratch(&mut self.result_buf, &mut self.scratch_buf);
 
                 for (acc, val) in accumulated_power.iter_mut().zip(&self.result_buf) {
                     *acc += val.norm_sqr();
                 }
             }
 
-            let mut local_max = 0.0;
-            let mut local_best_phase = 0;
-            for (idx, &power) in accumulated_power.iter().enumerate() {
-                if power > local_max {
-                    local_max = power;
-                    local_best_phase = idx;
-                }
-            }
-
-            if local_max > global_max_val {
-                global_max_val = local_max;
-                best_doppler_freq = doppler.doppler_freq_hz;
+            let (local_best_phase, local_max) =
+                accumulated_power
+                    .iter()
+                    .enumerate()
+                    .max_by(|(_, a), (_, b)| {
+                        a.partial_cmp(b)
+                            .expect("Error in finding local max in acquisiton.")
+                    })?;
+            if *local_max > global_max_val {
+                global_max_val = *local_max;
+                best_carr_freq = doppler.carr_freq_hz;
                 best_code_phase = local_best_phase;
                 best_power_results.copy_from_slice(&accumulated_power);
             }
+        }
 
-            if self.is_good_satellite(&best_power_results, global_max_val) {
-                let fine_doppler_freq = self.fine_doppler_search(
-                    samples_chunk,
-                    best_doppler_freq,
-                    best_code_phase,
-                    self.freq_sampling_hz,
-                );
-                return Some(AcquisitionResult {
-                    prn: self.prn,
-                    code_phase_samples: best_code_phase,
-                    code_phase_chips: best_code_phase as f32 * GPS_L1_CA_CODE_RATE_CHIPS_PER_S
-                        / self.freq_sampling_hz,
-                    carrier_freq: fine_doppler_freq,
-                    fs: self.freq_sampling_hz,
-                    // mag_relative: global_max_val,
-                    sample_global_index: local_tail + best_code_phase,
-                });
-            }
+        if self.is_good_satellite(&best_power_results, global_max_val) {
+            let carr_freq = self.finer_doppler(
+                samples_chunk,
+                best_code_phase,
+            )?;
+            // let fine_doppler_freq = self.fine_doppler_search(
+            //     samples_chunk,
+            //     best_carr_freq,
+            //     best_code_phase);
+            return Some(AcquisitionResult {
+                prn: self.prn,
+                code_phase_samples: best_code_phase,
+                code_phase_chips: best_code_phase as f32 * GPS_L1_CA_CODE_RATE_CHIPS_PER_S
+                    / self.freq_sampling_hz,
+                carrier_freq: carr_freq,
+                fs: self.freq_sampling_hz,
+                // mag_relative: global_max_val,
+                sample_global_index: local_tail + best_code_phase,
+            });
         }
 
         return None;
@@ -242,35 +253,77 @@ impl AcquisitionWorker {
             .reduce_sum();
         let avg_power: f32 = (sum_power - max_val) / (self.fft_size - 1) as f32;
 
-        max_val / avg_power > 7.0
+        max_val / avg_power > 10.0
     }
 
-    fn fine_doppler_search(&self, data_samples: &[Complex32], coarse_doppler_freq: f32, code_phase: usize, fs: f32) -> f32 {
-        let mut prompts = Vec::with_capacity(LONG_SAMPLES_LENGTH-1);
-        let num_samples_per_ms = (fs / 1000.0).round() as usize;
+    fn finer_doppler(
+        &self,
+        samples_iq: &[Complex32],
+        code_phase: usize,
+    ) -> Option<f32> {
+        let mean = samples_iq.iter().sum::<Complex32>() / samples_iq.len() as f32;
+        let samples_iq: Vec<Complex32> = samples_iq.iter().map(|x| x - mean).collect();
+        let num_ca_code_samples = (self.freq_sampling_hz
+            / (GPS_L1_CA_CODE_RATE_CHIPS_PER_S / GPS_L1_CA_CODE_LENGTH_CHIPS))
+            .round() as usize;
+        let size_signal_use = (LONG_SAMPLES_LENGTH - 1) as usize * num_ca_code_samples;
+
+        let fft_size: usize = size_signal_use.next_power_of_two();
+        let mut fft_input = vec![Complex32::new(0.0, 0.0); fft_size];
+
+        for i in 0..size_signal_use {
+            fft_input[i] = samples_iq[code_phase + i] * self.ca_code_samples[i] as f32;
+        }
+
+        let c_fft = Radix4::new(fft_size, FftDirection::Forward);
+
+        c_fft.process(&mut fft_input);
+        let (idx, _) = fft_input.iter().enumerate().max_by(|(_, a), (_, b)| {
+            a.norm_sqr()
+                .partial_cmp(&b.norm_sqr())
+                .expect("Error in finding local max in acquisiton.")
+        })?;
+
+        let frequency = if idx <= fft_size / 2 {
+            idx as f32 * self.freq_sampling_hz / fft_size as f32
+        } else {
+            (idx as isize - fft_size as isize) as f32 * self.freq_sampling_hz / fft_size as f32
+        };
+
+        return Some(-frequency);
+    }
+
+    fn fine_doppler_search(
+        &self,
+        data_samples: &[Complex32],
+        coarse_carr_freq: f32,
+        code_phase: usize
+    ) -> f32 {
+        let mut prompts = Vec::with_capacity(LONG_SAMPLES_LENGTH - 1);
+        let num_samples_per_ms = (self.freq_sampling_hz / 1000.0).round() as usize;
         let mut t_carrer = 0.0_f32;
 
-        for n in 0..LONG_SAMPLES_LENGTH-1 {
+        for n in 0..LONG_SAMPLES_LENGTH - 1 {
             let mut i_sum = 0.0_f32;
             let mut q_sum = 0.0_f32;
 
             for i in 0..num_samples_per_ms {
                 let idx = code_phase + n * num_samples_per_ms + i;
                 let sample = data_samples[idx];
-                let phase = 2.0 * std::f32::consts::PI * coarse_doppler_freq * t_carrer;
+                let phase = 2.0 * PI * coarse_carr_freq * t_carrer;
                 let cos_p = phase.cos();
                 let sin_p = -phase.sin();
 
                 let i_bb = sample.re * cos_p - sample.im * sin_p;
                 let q_bb = sample.re * sin_p + sample.im * cos_p;
 
-                let chip_idx = (i as f32 * GPS_L1_CA_CODE_RATE_CHIPS_PER_S / fs).floor() % GPS_L1_CA_CODE_LENGTH_CHIPS;
-                let prn_val = self.ca_code_samples[chip_idx as usize];
+                let chip_idx = n * num_samples_per_ms + i;
+                let prn_val = self.ca_code_samples[chip_idx];
 
                 i_sum += i_bb * prn_val as f32;
                 q_sum += q_bb * prn_val as f32;
 
-                t_carrer += 1.0 / fs;
+                t_carrer += 1.0 / self.freq_sampling_hz;
             }
             prompts.push(Complex32::new(i_sum, q_sum));
         }
@@ -278,12 +331,12 @@ impl AcquisitionWorker {
         let mut best_f_offset = 0.0_f32;
         let mut max_mag = 0.0_f32;
 
-        for f in (-300..=300).step_by(15) {
+        for f in (-300..=300).step_by(10) {
             let f_test_f = f as f32;
             let mut sweep_i = 0.0_f32;
             let mut sweep_q = 0.0_f32;
 
-            for m in 0..LONG_SAMPLES_LENGTH-1 {
+            for m in 0..LONG_SAMPLES_LENGTH - 1 {
                 let t = m as f32 * 0.001;
                 let c = prompts[m];
 
@@ -305,7 +358,7 @@ impl AcquisitionWorker {
             }
         }
 
-        coarse_doppler_freq + best_f_offset
+        coarse_carr_freq + best_f_offset / 2.0
     }
 }
 
@@ -367,7 +420,7 @@ pub fn run(
 
         let head = multi_buffer.get_head();
 
-        if (head.wrapping_sub(samples_integration_size) as isize) >=0 {
+        if (head.wrapping_sub(samples_integration_size) as isize) >= 0 {
             let local_tail = head.wrapping_sub(samples_integration_size);
             multi_buffer.copy_to_slice(local_tail, &mut chunk_samples);
             let results: Vec<AcquisitionResult> = workers
@@ -376,7 +429,12 @@ pub fn run(
                 .filter_map(|(i, worker)| {
                     let prn = i as u8 + 1;
                     if (mask >> (prn - 1)) & 1 == 1 {
-                        worker.search_satellite(&chunk_samples, &doppler_table, local_tail, LONG_SAMPLES_LENGTH)
+                        worker.search_satellite(
+                            &chunk_samples,
+                            &doppler_table,
+                            local_tail,
+                            LONG_SAMPLES_LENGTH,
+                        )
                     } else {
                         None
                     }
@@ -404,6 +462,7 @@ mod tests {
     use std::collections::HashSet;
     use std::fs::File;
     use std::io::Read;
+    use std::os::unix::fs::FileExt;
     use std::path::Path;
     use std::time::Instant;
 
@@ -465,7 +524,7 @@ mod tests {
         assert_eq!(mask, 2040);
     }
 
-    // Checking elapsed time should use "cargo test --release" to get more realistic performance numbers 
+    // Checking elapsed time should use "cargo test --release" to get more realistic performance numbers
     #[test]
     fn test_acquisition_with_real_data() {
         const FS: f32 = 16_367_600.0;
@@ -492,7 +551,10 @@ mod tests {
         file.read_exact(&mut raw_bytes)
             .expect("Failed to read 1ms of samples");
         let mut raw_samples = vec![Complex32::new(0.0, 0.0); MS_SAMPLES];
-        raw_samples = raw_bytes.iter().map(|x| Complex32::new((*x as i16) as f32, 0.0)).collect();
+        raw_samples = raw_bytes
+            .iter()
+            .map(|x| Complex32::new((*x as i16) as f32, 0.0))
+            .collect();
 
         let doppler_start = -7000.0;
         let doppler_end = 7000.0;
@@ -502,18 +564,28 @@ mod tests {
         let mut current_doppler = doppler_start;
 
         while current_doppler <= doppler_end {
-            doppler_tables.push(DopplerShiftTable::new(IF, current_doppler, FS, MS_SAMPLES/NUM_INTEGRATIONS));
+            doppler_tables.push(DopplerShiftTable::new(
+                IF,
+                current_doppler,
+                FS,
+                MS_SAMPLES / NUM_INTEGRATIONS,
+            ));
             current_doppler += step;
         }
 
-        let true_satellites = vec![3, 6, 9, 11, 14, 18, 19, 22, 28, 32];
+        let true_satellites = vec![1, 2, 3, 6, 9, 11, 14, 18, 19, 22, 28, 32];
         let mut test_prn = 1;
         while test_prn < 33 {
-            let mut worker = AcquisitionWorker::new(test_prn, MS_SAMPLES/NUM_INTEGRATIONS, FS);
+            let mut worker = AcquisitionWorker::new(test_prn, MS_SAMPLES / NUM_INTEGRATIONS, FS);
 
             let now = Instant::now();
-            let result = worker.search_satellite(&raw_samples, &doppler_tables, 0, NUM_INTEGRATIONS);
-            print!("Elapsed time for PRN {}: {:.2?} - ", test_prn, now.elapsed());
+            let result =
+                worker.search_satellite(&raw_samples, &doppler_tables, 0, NUM_INTEGRATIONS);
+            print!(
+                "Elapsed time for PRN {}: {:.2?} - ",
+                test_prn,
+                now.elapsed()
+            );
             match result {
                 Some(acq) => {
                     println!("SUCCESS: Acquired PRN {}!", acq.prn);
@@ -521,17 +593,92 @@ mod tests {
                     println!("  Code Phase:     {} samples", acq.code_phase_samples);
                     println!("  Code Phase:     {} chips", acq.code_phase_chips);
 
-                    assert!(&true_satellites.contains(&test_prn), "Acquired PRN {} which is not in the true satellite list!", test_prn);
+                    assert!(
+                        &true_satellites.contains(&test_prn),
+                        "Acquired PRN {} which is not in the true satellite list!",
+                        test_prn
+                    );
                 }
                 None => {
                     println!(
                         "PRN {} not found in this {}ms chunk (satellite likely not visible).",
-                        test_prn,
-                        NUM_INTEGRATIONS
+                        test_prn, NUM_INTEGRATIONS
                     );
                 }
             }
             test_prn += 1;
+        }
+    }
+
+    #[test]
+    fn test_correlation_peak() {
+        const FS: f32 = 16_367_600.0;
+        const IF: f32 = 4_130_400.0;
+        const NUM_INTEGRATIONS: usize = LONG_SAMPLES_LENGTH;
+        const MS_SAMPLES: usize = NUM_INTEGRATIONS * 16368;
+
+        let root = env!("CARGO_MANIFEST_DIR");
+        let file_path = Path::new(root)
+            .join("src")
+            .join("test_data")
+            .join("GPS_recordings")
+            .join("gioveAandB_short.bin");
+
+        let file = match File::open(file_path) {
+            Ok(f) => f,
+            Err(_) => {
+                println!("Raw data file not found. Skipping real-data test.");
+                return;
+            }
+        };
+
+        let doppler_start = -7000.0;
+        let doppler_end = 7000.0;
+        let step = 500.0;
+
+        let mut doppler_tables = Vec::new();
+        let mut current_doppler = doppler_start;
+
+        while current_doppler <= doppler_end {
+            doppler_tables.push(DopplerShiftTable::new(
+                IF,
+                current_doppler,
+                FS,
+                MS_SAMPLES / NUM_INTEGRATIONS,
+            ));
+            current_doppler += step;
+        }
+
+        let test_prn = 3;
+        let mut offset = 0;
+        let mut raw_samples = vec![Complex32::new(0.0, 0.0); MS_SAMPLES];
+        for i in 0..10 {
+            let mut raw_bytes = vec![0u8; MS_SAMPLES];
+            file.read_exact_at(&mut raw_bytes, offset as u64)
+                .expect("Failed to read raw data file");
+            raw_samples = raw_bytes
+                .iter()
+                .map(|x| Complex32::new((*x as i16) as f32, 0.0))
+                .collect();
+            offset += MS_SAMPLES;
+
+            let mut worker = AcquisitionWorker::new(test_prn, MS_SAMPLES / NUM_INTEGRATIONS, FS);
+
+            let result =
+                worker.search_satellite(&raw_samples, &doppler_tables, 0, NUM_INTEGRATIONS);
+            match result {
+                Some(acq) => {
+                    println!("At loop {} --------------", i);
+                    println!("  Code Phase:     {} samples", acq.code_phase_samples);
+                }
+                None => {
+                    println!("At loop {} --------------", i);
+                    println!(
+                        "PRN {} not found in this {}ms chunk (satellite likely not visible).",
+                        test_prn, NUM_INTEGRATIONS
+                    );
+                }
+            }
         }
     }
 }

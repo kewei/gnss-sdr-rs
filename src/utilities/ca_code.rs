@@ -10,18 +10,22 @@ use crate::constants::gps_property_constants;
 /// A vector of i8 representing the CA code samples (1 or -1)
 #[inline(always)]
 pub fn generate_ca_code_samples(prn: u8, code_rate: f32, f_sampling: f32) -> Vec<i8> {
-    let num_samples = (f_sampling
-        / (code_rate
-            / gps_property_constants::GPS_L1_CA_CODE_LENGTH_CHIPS))
-        .round() as usize;
-    let samples_ind: Vec<usize> = (0..num_samples)
-        .map(|x| {
-            (x as f32 * code_rate / f_sampling).floor()
-                as usize
-        })
-        .collect();
+    generate_ca_code_samples_blocks(prn, code_rate, f_sampling, 1)
+}
 
+#[inline(always)]
+pub fn generate_ca_code_samples_blocks(prn: u8, code_rate: f32, f_sampling: f32, blocks: usize) -> Vec<i8> {
     let ca_code = GPS_CA_CODE_32_PRN[prn as usize - 1];
     
-    samples_ind.iter().map(|&ind| ca_code[ind]).collect()
+    let num_samples = blocks * (f_sampling
+        / (code_rate / gps_property_constants::GPS_L1_CA_CODE_LENGTH_CHIPS))
+        .round() as usize;
+
+    (0..num_samples)
+        .map(|x| {
+            let phase = (x as f32 * code_rate / f_sampling).floor()
+                as usize % gps_property_constants::GPS_L1_CA_CODE_LENGTH_CHIPS as usize;
+            ca_code[phase]
+        })
+        .collect()
 }

@@ -3,7 +3,7 @@ use num_complex::Complex32;
 
 
 pub struct DopplerShiftTable {
-    pub doppler_freq_hz: f32,
+    pub carr_freq_hz: f32,
     pub table: Vec<Complex32>,
 }
 
@@ -17,7 +17,7 @@ impl DopplerShiftTable {
             let phase = i as f32 * phase_step;
             table.push(Complex32::new(phase.cos(), -phase.sin())); // Negative for downconversion
         }
-        Self { doppler_freq_hz: carr_freq, table }
+        Self { carr_freq_hz: carr_freq, table }
     }
 }
 
