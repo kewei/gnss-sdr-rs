@@ -287,7 +287,7 @@ impl AcquisitionWorker {
             (idx as isize - fft_size as isize) as f32 * self.freq_sampling_hz / fft_size as f32
         };
 
-        return Some(-frequency);
+        return Some(frequency);
     }
 
     #[allow(dead_code)]
