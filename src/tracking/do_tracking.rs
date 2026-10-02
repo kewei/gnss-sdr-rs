@@ -3,7 +3,6 @@ use crate::constants::gps_ca_constants::GPS_CA_CODE_32_PRN;
 use crate::constants::gps_property_constants::{
     GPS_L1_CA_CODE_LENGTH_CHIPS, GPS_L1_CA_CODE_RATE_CHIPS_PER_S,
 };
-use crate::utilities::ca_code::generate_ca_code_samples;
 use crate::utilities::multicast_ring_buffer::MulticastRingBuffer;
 use crossbeam_channel::{Receiver, Sender};
 use num_complex::Complex32;
@@ -18,10 +17,10 @@ const MAX_LOST_EPOCHS: u32 = 20; // ms
 const NUM_OF_CHANNELS: usize = 15;
 static DLL_DUMPING_RATIO: f32 = 0.7;
 static PLL_DUMPING_RATIO: f32 = 0.7;
-static FLL_DUMPING_RATIO: f32 = 0.7;
+// static FLL_DUMPING_RATIO: f32 = 0.7;
 static DLL_NOISE_BANDWIDTH: f32 = 2.0;
 static PLL_NOISE_BANDWIDTH: f32 = 25.0;
-static FLL_NOISE_BANDWIDTH: f32 = 50.0;
+// static FLL_NOISE_BANDWIDTH: f32 = 50.0;
 static PLL_GAIN: f32 = 0.25;
 static DLL_GAIN: f32 = 1.0;
 static FLL_GAIN: f32 = 0.05;
@@ -29,7 +28,7 @@ static FLL_GAIN: f32 = 0.05;
 static PLL_SUM_CARR: f32 = 0.001;
 static DLL_SUM_CODE: f32 = 0.001;
 static FLL_SUM_CARR: f32 = 0.001;
-static FLL_DURATION: usize = 200; // ms
+// static FLL_DURATION: usize = 200; // ms
 static EARLY_LATE_SPACE: f32 = 0.5;
 pub static LOOP_MS: usize = 10;
 
@@ -75,20 +74,6 @@ impl LoopFilter {
     }
 }
 
-// pub struct CacodeTable {
-//     pub samples: Vec<Vec<i8>>,
-// }
-
-// impl CacodeTable {
-//     pub fn new(prn: u8, fs:f32) -> Self {
-//         Self{
-//             samples: generate_ca_code_samples(prn, fs)
-//         }
-//     }
-// }
-// pub struct CarrierNco{
-
-// }
 
 pub struct TrackingChannel {
     pub id: u8,
@@ -122,7 +107,7 @@ pub struct TrackingChannel {
 
     pub pll_filter: LoopFilter,
     pub dll_filter: LoopFilter,
-    pub fll_filter: LoopFilter,
+    // pub fll_filter: LoopFilter,
     fll_mode: bool, // true: FLL for the first 100-500ms, false: PLL
     smoothed_freq_error: f32,
     fll_counter: u32,
@@ -141,8 +126,7 @@ impl TrackingChannel {
             next_sample_index: 0,
             num_samples_per_code: num_ca_samples,
             ca_code_samples: Vec::with_capacity((1.5 * num_ca_samples as f32).round() as usize), // pre-allocate more samples to avoid frequent resizing during tracking
-            // data_samples: vec![Complex32::new(0.0, 0.0); (1.5 * num_ca_samples as f32).round() as usize],
-            data_samples: Vec::with_capacity((1.5 * num_ca_samples as f32).round() as usize),
+            data_samples: vec![Complex32::new(0.0, 0.0); (1.5 * num_ca_samples as f32).round() as usize],
             fs: fs,
             carrier_freq: 0.0,
             acq_carrier_freq: 0.0,
@@ -162,8 +146,8 @@ impl TrackingChannel {
             q_prompt_prev: 0.0,
             pll_filter: LoopFilter::new(PLL_NOISE_BANDWIDTH, PLL_DUMPING_RATIO, PLL_GAIN),
             dll_filter: LoopFilter::new(DLL_NOISE_BANDWIDTH, DLL_DUMPING_RATIO, DLL_GAIN),
-            fll_filter: LoopFilter::new(FLL_NOISE_BANDWIDTH, FLL_DUMPING_RATIO, FLL_GAIN),
-            fll_mode: true,
+            // fll_filter: LoopFilter::new(FLL_NOISE_BANDWIDTH, FLL_DUMPING_RATIO, FLL_GAIN),
+            fll_mode: false,  // Not implemented yet
             smoothed_freq_error: 0.0,
             fll_counter: 0,
         }
@@ -303,38 +287,38 @@ impl TrackingChannel {
 
     pub fn run_loop_filters(&mut self, i_p: f32, q_p: f32, i_e: f32, q_e: f32, i_l: f32, q_l: f32) {
         if self.fll_mode {
-            let corss_mult = self.i_prompt_prev * q_p - self.q_prompt_prev * i_p;
-            let dot_mult = self.i_prompt_prev * i_p + self.q_prompt_prev * q_p;
-            let raw_fll_err = if dot_mult.abs() > 1e-6 {
-                corss_mult.atan2(dot_mult) / (2.0 * PI * FLL_SUM_CARR)
-            } else {
-                0.0
-            };
-            // Moving average to smooth the frequency error, and a counter to determine when to switch from FLL to PLL
-            self.smoothed_freq_error = 0.05 * raw_fll_err.abs() + 0.95 * self.smoothed_freq_error;
-            if self.smoothed_freq_error < 20.0 {
-                self.fll_counter += 1;
-            } else {
-                self.fll_counter = 0;
-            }
-
-            if self.fll_counter >= 20 {
-                self.fll_mode = false;
-                self.carrier_error = 0.0; // Reset carrier error when switching to PLL
-            } else {
-                self.carrier_nco += self
-                    .fll_filter
-                    .update(raw_fll_err, self.carrier_error, FLL_SUM_CARR);
-
-                self.carrier_error = raw_fll_err;
-                self.carrier_freq = self.acq_carrier_freq + self.carrier_nco;
-
-                self.i_prompt_prev = i_p;
+            if self.i_prompt_prev == 0.0 && self.q_prompt_prev == 0.0 {
+               self.i_prompt_prev = i_p;
                 self.q_prompt_prev = q_p;
             }
+            else {
+                let cross_mult = self.i_prompt_prev * q_p - self.q_prompt_prev * i_p;
+                let dot_mult = self.i_prompt_prev * i_p + self.q_prompt_prev * q_p;
+                let raw_fll_err = if cross_mult.abs() > 1e-6 {
+                    dot_mult.atan2(cross_mult) / (2.0 * PI * FLL_SUM_CARR)
+                } else {
+                    0.0
+                };
+                // Moving average to smooth the frequency error, and a counter to determine when to switch from FLL to PLL
+                self.smoothed_freq_error = 0.05 * raw_fll_err.abs() + 0.95 * self.smoothed_freq_error;
+
+                if self.smoothed_freq_error < 30.0 {
+                    self.fll_counter += 1;
+                } else {
+                    self.fll_counter = 0;
+                }
+
+                if self.fll_counter >= 20 {
+                    self.fll_mode = false;
+                    self.carrier_error = 0.0; // Reset carrier error when switching to PLL
+                } else {
+                    self.carrier_error = raw_fll_err;
+                    self.carrier_freq += raw_fll_err * FLL_GAIN;
+                    self.i_prompt_prev = i_p;
+                    self.q_prompt_prev = q_p;
+                }
+            }
         } else {
-            println!("------- Switching to PLL mode for PRN {}", self.prn);
-            // Costas — insensitive to 180° nav bit flips
             let pll_err = q_p.atan2(i_p) / (2.0 * PI);
             self.carrier_nco += self
                 .pll_filter
@@ -549,6 +533,7 @@ mod tests {
             code_phase_chips: 0.0,
             fs: f_sampling,
             sample_global_index: 0,
+            fft_power: Vec::new()
         });
 
         let now = Instant::now();
@@ -654,6 +639,7 @@ mod tests {
             code_phase_chips: 0.0, // Our local code starts perfectly aligned, but the real signal is early
             fs: f_sampling,
             sample_global_index: 0,
+            fft_power: Vec::new(),
         });
 
         let now = Instant::now();
@@ -766,7 +752,7 @@ mod tests {
         let prn = 3;
         let mut acq_worker =
             do_acquisition::AcquisitionWorker::new(prn, MS_SAMPLES / NUM_INTEGRATIONS, FS);
-        let mut aqc_result = acq_worker
+        let aqc_result = acq_worker
             .search_satellite(&buffer, &doppler_tables, 0, NUM_INTEGRATIONS)
             .expect("Failed to acquire satellite");
 
@@ -779,7 +765,7 @@ mod tests {
         println!("  Code Phase:     {} chips", aqc_result.code_phase_chips);
 
         // aqc_result.carrier_freq = -4127190.0;
-        aqc_result.carrier_freq += 200.0;
+        // aqc_result.carrier_freq += 200.0;
 
         let mut trk_channel = TrackingChannel::new(0, FS);
         let mut offset = aqc_result.code_phase_samples;
@@ -788,24 +774,24 @@ mod tests {
         let mut prompt_i = Vec::new();
         let mut prompt_q = Vec::new();
         // let mut doppler_history = Vec::new();
-        // let mut code_rate_history = Vec::new();
-        // let mut code_error = Vec::new();
-        // let mut code_nco = Vec::new();
-        // let mut rem_code_phase = Vec::new();
+        let mut code_rate_history = Vec::new();
+        let mut code_error = Vec::new();
+        let mut code_nco = Vec::new();
+        let mut rem_code_phase = Vec::new();
         let mut carr_error = Vec::new();
         let mut carr_nco = Vec::new();
         let mut rem_carr_phase = Vec::new();
 
         // trk_channel.ca_code_samples =
         //     generate_ca_code_samples(trk_channel.prn, trk_channel.code_rate, trk_channel.fs);
-        let mut file = match File::open(file_path.clone()) {
+        let file = match File::open(file_path.clone()) {
             Ok(f) => f,
             Err(_) => {
                 println!("Raw data file not found. Skipping real-data test.");
                 return;
             }
         };
-        for i in 0..100 {
+        for i in 0..200 {
             let mut bytes = vec![0u8; trk_channel.num_samples_per_code];
             file.read_exact_at(&mut bytes, offset as u64)
                 .expect("Failed to read raw data file");
@@ -822,17 +808,17 @@ mod tests {
                 trk_channel.i_prompt.powi(2) + trk_channel.q_prompt.powi(2) > LOCK_THRESHOLD,
                 "Tracking lost: Prompt power below threshold"
             );
-            if i > 80 {
+            if i >= 0 && i < 20{
                 prompt_i.push(trk_channel.i_prompt);
                 prompt_q.push(trk_channel.q_prompt);
                 // doppler_history.push(trk_channel.carrier_freq);
-                // code_rate_history.push(trk_channel.code_rate);
+                code_rate_history.push(trk_channel.code_rate);
                 carr_error.push(trk_channel.carrier_error);
-                // code_error .push(trk_channel.code_error);
+                code_error .push(trk_channel.code_error);
                 carr_nco.push(trk_channel.carrier_nco);
-                // code_nco.push(trk_channel.code_nco);
+                code_nco.push(trk_channel.code_nco);
                 rem_carr_phase.push(trk_channel.carrier_phase);
-                // rem_code_phase.push(trk_channel.rem_code_phase);
+                rem_code_phase.push(trk_channel.rem_code_phase);
             }
         }
 
@@ -842,37 +828,38 @@ mod tests {
         //     "carrier frequency (should be close to IF): {:?}",
         //     doppler_history
         // );
-        // println!(
-        //     "code rate (should be close to {}MHz): {:?}MHz",
-        //     GPS_L1_CA_CODE_RATE_CHIPS_PER_S / 1_000_000.0,
-        //     code_rate_history
-        //         .iter()
-        //         .map(|r| r / 1_000_000.0)
-        //         .collect::<Vec<f32>>()
-        // );
+
         println!(
             "carrier error : {:?}",
             carr_error
         );
-        // println!(
-        //     "code error: {:?}",
-        //     code_error
-        // );
         println!(
             "carrier NCO : {:?}",
             carr_nco
         );
-        // println!(
-        //     "code NCO : {:?}",
-        //     code_nco
-        // );
         println!(
             "remaining carrier phase : {:?}",
             rem_carr_phase
         );
-        // println!(
-        //     "remaining code phase : {:?}",
-        //     rem_code_phase
-        // );
+        println!(
+            "code rate (should be close to {}MHz): {:?}MHz",
+            GPS_L1_CA_CODE_RATE_CHIPS_PER_S / 1_000_000.0,
+            code_rate_history
+                .iter()
+                .map(|r| r / 1_000_000.0)
+                .collect::<Vec<f32>>()
+        );
+        println!(
+            "code NCO : {:?}",
+            code_nco
+        );
+        println!(
+            "remaining code phase : {:?}",
+            rem_code_phase
+        );
+         println!(
+            "code error: {:?}",
+            code_error
+        );
     }
 }

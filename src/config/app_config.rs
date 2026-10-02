@@ -11,6 +11,7 @@ pub struct AppConfig {
     pub sdr: SdrConfig,
     pub rf: RfConfig,
     pub pvt: PvtConfig,
+    pub visualization: VisualizationConfig,
     pub output: OutputConfig,
 }
 
@@ -23,6 +24,11 @@ pub struct RfConfig {
 
 #[derive(Deserialize, Debug)]
 pub struct PvtConfig {
+    pub enable: bool,
+}
+
+#[derive(Deserialize, Debug)]
+pub struct VisualizationConfig {
     pub enable: bool,
 }
 

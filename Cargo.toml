@@ -40,6 +40,8 @@ strum = "0.27"
 strum_macros = "0.27"
 ringbuf = '0.4.0'
 toml = "1.1.2+spec-1.1.0"
+eframe = "0.36.0"
+egui_plot = "0.37.0"
 
 [build-dependencies]
 bindgen = "0.69.1"

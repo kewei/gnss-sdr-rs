@@ -8,9 +8,13 @@ gain_db = 40.0
 
 [rf]
 output_sample_rate_hz = 2048000
+complex_signal = true
 enable_agc = true
 
 [pvt]
+enable = true
+
+[visualization]
 enable = true
 
 [output]

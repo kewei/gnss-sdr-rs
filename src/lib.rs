@@ -12,3 +12,5 @@ pub mod config;
 pub mod acquisition;
 pub mod tracking;
 pub mod constants;
+pub mod visualization;
+pub mod data;

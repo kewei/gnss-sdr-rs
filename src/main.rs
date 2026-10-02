@@ -10,6 +10,9 @@ use gnss_sdr_rs::sdr_store::sdr_wrapper::start_device_with_name;
 use gnss_sdr_rs::tracking::do_tracking;
 use gnss_sdr_rs::tracking::do_tracking::TrackingMessage;
 use gnss_sdr_rs::utilities::multicast_ring_buffer::MulticastRingBuffer;
+use gnss_sdr_rs::data::acquisition_data::AcquisitionData;
+use gnss_sdr_rs::visualization::acquisition_gui::AcquisitionGui;
+use gnss_sdr_rs::visualization::app_gui::GnssSdrRsGui;
 use serde_json::json;
 use std::sync::Arc;
 use std::thread;
@@ -32,6 +35,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let multicast_buffer: Arc<MulticastRingBuffer> = Arc::new(MulticastRingBuffer::new(1 << 20)); // 1M Complex32 samples, 8MB
     let (tx_acq, rx_acq) = crossbeam_channel::unbounded::<AcquisitionResult>();
     let (tx_trk, rx_trk) = crossbeam_channel::unbounded::<TrackingMessage>();
+    let (tx_acq_gui, rx_acq_gui) = std::sync::mpsc::channel::<AcquisitionData>();
 
     thread::spawn(move || {
         let _ = sdr_thread(&mut sdr_dev, &mut raw_ring_buffer.producer);
@@ -59,6 +63,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             app_config.rf.freq_if_hz.unwrap_or(0.0),
             tx_acq,
             rx_trk,
+            tx_acq_gui,
         );
     })
     .join()
@@ -75,6 +80,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     })
     .join()
     .map_err(|e| format!("Tracking thread failed: {:?}", e))?;
+
+    let acq_gui = AcquisitionGui::new(rx_acq_gui);
+    let app = GnssSdrRsGui::new(acq_gui);
+    eframe::run_native("GNSS-SDR-RS", eframe::NativeOptions::default(), Box::new(|_cc| Ok(Box::new(app))))?;
 
     Ok(())
 }

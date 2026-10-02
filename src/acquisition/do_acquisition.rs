@@ -2,20 +2,21 @@ use crate::acquisition::doppler_shift::{DopplerShiftTable, apply_doppler_shift};
 use crate::constants::gps_property_constants::{
     GPS_L1_CA_CODE_LENGTH_CHIPS, GPS_L1_CA_CODE_RATE_CHIPS_PER_S,
 };
+use crate::data::acquisition_data::AcquisitionData;
 use crate::tracking::do_tracking::TrackingMessage;
 use crate::utilities::ca_code::generate_ca_code_samples_blocks;
 use crate::utilities::multicast_ring_buffer::MulticastRingBuffer;
 use crossbeam_channel::{Receiver, Sender};
-use num_complex::Complex32;
+use num_complex::{Complex32, ComplexFloat};
 use rayon::prelude::*;
 use rustfft::{Fft, FftDirection, FftPlanner, algorithm::Radix4};
 use std::collections::HashSet;
 use std::error::Error;
 use std::f32::consts::PI;
-use std::fmt;
 use std::simd::f32x8;
 use std::simd::num::SimdFloat;
 use std::sync::{Arc, PoisonError};
+use std::{default, fmt};
 
 // const FFT_LENGTH_MS: u8 = 1;
 const FREQ_SEARCH_ACQUISITION_HZ: f32 = 14e3; // Hz
@@ -75,11 +76,11 @@ impl AcquisitionManager {
 }
 
 #[derive(Debug, Clone)]
-pub struct AcqError;
+pub struct AcqError(pub String);
 
 impl fmt::Display for AcqError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "Acquisition Error!")
+        write!(f, "Acquisition Error: {}!", self.0)
     }
 }
 
@@ -87,7 +88,7 @@ impl Error for AcqError {}
 
 impl<T> From<PoisonError<T>> for AcqError {
     fn from(_: PoisonError<T>) -> Self {
-        AcqError
+        AcqError("Poison error".to_string())
     }
 }
 
@@ -100,6 +101,7 @@ pub struct AcquisitionResult {
     pub fs: f32,
     // pub mag_relative: f32,
     pub sample_global_index: usize,
+    pub fft_power: Vec<f32>,
 }
 
 impl AcquisitionResult {
@@ -112,6 +114,7 @@ impl AcquisitionResult {
             fs: 0.0,
             // mag_relative: 0.0,
             sample_global_index: 0,
+            fft_power: Vec::new(),
         }
     }
 }
@@ -218,24 +221,26 @@ impl AcquisitionWorker {
         }
 
         if self.is_good_satellite(&best_power_results, global_max_val) {
-            let carr_freq = self.finer_doppler(
-                samples_chunk,
-                best_code_phase,
-            )?;
-            // let fine_doppler_freq = self.fine_doppler_search(
-            //     samples_chunk,
-            //     best_carr_freq,
-            //     best_code_phase);
-            return Some(AcquisitionResult {
+            let mut res = AcquisitionResult {
                 prn: self.prn,
                 code_phase_samples: best_code_phase,
                 code_phase_chips: best_code_phase as f32 * GPS_L1_CA_CODE_RATE_CHIPS_PER_S
                     / self.freq_sampling_hz,
-                carrier_freq: carr_freq,
+                carrier_freq: 0.0,
                 fs: self.freq_sampling_hz,
                 // mag_relative: global_max_val,
                 sample_global_index: local_tail + best_code_phase,
-            });
+                fft_power: Vec::new(),
+            };
+            let carr_freq =
+                self.finer_doppler(samples_chunk, best_code_phase, &mut res.fft_power)?;
+            // let fine_doppler_freq = self.fine_doppler_search(
+            //     samples_chunk,
+            //     best_carr_freq,
+            //     best_code_phase);
+            res.carrier_freq = carr_freq;
+
+            return Some(res);
         }
 
         return None;
@@ -257,6 +262,7 @@ impl AcquisitionWorker {
         &self,
         samples_iq: &[Complex32],
         code_phase: usize,
+        fft_power: &mut Vec<f32>,
     ) -> Option<f32> {
         let mean = samples_iq.iter().sum::<Complex32>() / samples_iq.len() as f32;
         let samples_iq: Vec<Complex32> = samples_iq.iter().map(|x| x - mean).collect();
@@ -265,7 +271,7 @@ impl AcquisitionWorker {
             .round() as usize;
         let size_signal_use = (LONG_SAMPLES_LENGTH - 1) as usize * num_ca_code_samples;
 
-        let fft_size: usize = size_signal_use.next_power_of_two();
+        let fft_size: usize = 2 * size_signal_use.next_power_of_two();
         let mut fft_input = vec![Complex32::new(0.0, 0.0); fft_size];
 
         for i in 0..size_signal_use {
@@ -281,13 +287,23 @@ impl AcquisitionWorker {
                 .expect("Error in finding local max in acquisiton.")
         })?;
 
-        let frequency = if idx <= fft_size / 2 {
+        let half_fft_size = (((fft_size + 1) as f32) / 2.0).ceil() as usize;
+
+        println!(
+            "--------- idx: {}, half_fft_size: {}, fft_size: {}",
+            idx, half_fft_size, fft_size
+        );
+        println!("{:?}", fft_input[idx-5..idx+5].iter().map(|x| x.abs()).collect::<Vec<f32>>());
+        println!("{:?}", fft_input[fft_size-idx-5..fft_size-idx+5].iter().map(|x| x.abs()).collect::<Vec<f32>>());
+
+        let frequency = if idx <= half_fft_size {
             idx as f32 * self.freq_sampling_hz / fft_size as f32
         } else {
             (idx as isize - fft_size as isize) as f32 * self.freq_sampling_hz / fft_size as f32
         };
+        *fft_power = fft_input.iter().map(|x| x.norm_sqr()).collect();
 
-        return Some(frequency);
+        return Some(-frequency);
     }
 
     #[allow(dead_code)]
@@ -295,7 +311,7 @@ impl AcquisitionWorker {
         &self,
         data_samples: &[Complex32],
         coarse_carr_freq: f32,
-        code_phase: usize
+        code_phase: usize,
     ) -> f32 {
         let mut prompts = Vec::with_capacity(LONG_SAMPLES_LENGTH - 1);
         let num_samples_per_ms = (self.freq_sampling_hz / 1000.0).round() as usize;
@@ -366,6 +382,7 @@ pub fn run(
     f_if: f32,
     to_tracking: Sender<AcquisitionResult>,
     from_tracking: Receiver<TrackingMessage>,
+    to_gui: std::sync::mpsc::Sender<AcquisitionData>,
 ) -> Result<(), AcqError> {
     let capacity = (FREQ_SEARCH_ACQUISITION_HZ as u16 / FREQ_SEARCH_STEP_HZ) as usize + 1;
     let fft_size = (freq_sampling_hz
@@ -441,6 +458,16 @@ pub fn run(
 
             for result in results {
                 let prn = result.prn;
+
+                to_gui
+                    .send(AcquisitionData {
+                        prn,
+                        fft_power: result.fft_power.clone(),
+                        doppler_hz: result.carrier_freq.clone(),
+                        code_phase: result.code_phase_samples.clone(),
+                    })
+                    .map_err(|_| AcqError("Error in sending AquisitionData to GUI".to_string()))?;
+
                 if to_tracking.send(result).is_ok() {
                     active_prns.insert(prn);
                 }
@@ -463,6 +490,11 @@ mod tests {
     use std::os::unix::fs::FileExt;
     use std::path::Path;
     use std::time::Instant;
+
+    const FS: f32 = 16_367_600.0;
+    const IF: f32 = 4_130_400.0;
+    const NUM_INTEGRATIONS: usize = LONG_SAMPLES_LENGTH;
+    const MS_SAMPLES: usize = NUM_INTEGRATIONS * 16368;
 
     #[test]
     fn test_acquisition_manager_initialization() {
@@ -522,38 +554,7 @@ mod tests {
         assert_eq!(mask, 2040);
     }
 
-    // Checking elapsed time should use "cargo test --release" to get more realistic performance numbers
-    #[test]
-    fn test_acquisition_with_real_data() {
-        const FS: f32 = 16_367_600.0;
-        const IF: f32 = 4_130_400.0;
-        const NUM_INTEGRATIONS: usize = LONG_SAMPLES_LENGTH;
-        const MS_SAMPLES: usize = NUM_INTEGRATIONS * 16368;
-
-        let root = env!("CARGO_MANIFEST_DIR");
-        let file_path = Path::new(root)
-            .join("src")
-            .join("test_data")
-            .join("GPS_recordings")
-            .join("gioveAandB_short.bin");
-
-        let mut file = match File::open(file_path) {
-            Ok(f) => f,
-            Err(_) => {
-                println!("Raw data file not found. Skipping real-data test.");
-                return;
-            }
-        };
-
-        let mut raw_bytes = vec![0u8; MS_SAMPLES];
-        file.read_exact(&mut raw_bytes)
-            .expect("Failed to read 1ms of samples");
-        let mut raw_samples = vec![Complex32::new(0.0, 0.0); MS_SAMPLES];
-        raw_samples = raw_bytes
-            .iter()
-            .map(|x| Complex32::new((*x as i16) as f32, 0.0))
-            .collect();
-
+    fn get_raw_samples() -> Option<(Vec<DopplerShiftTable>, Vec<Complex32>)>{
         let doppler_start = -7000.0;
         let doppler_end = 7000.0;
         let step = 500.0;
@@ -570,6 +571,38 @@ mod tests {
             ));
             current_doppler += step;
         }
+
+        let root = env!("CARGO_MANIFEST_DIR");
+        let file_path = Path::new(root)
+            .join("src")
+            .join("test_data")
+            .join("GPS_recordings")
+            .join("gioveAandB_short.bin");
+
+        let mut file = match File::open(file_path) {
+            Ok(f) => f,
+            Err(_) => {
+                println!("Raw data file not found. Skipping real-data test.");
+                return None;
+            }
+        };
+
+        let mut raw_bytes = vec![0u8; MS_SAMPLES];
+        file.read_exact(&mut raw_bytes)
+            .expect("Failed to read 1ms of samples");
+        let mut raw_samples = vec![Complex32::new(0.0, 0.0); MS_SAMPLES];
+        raw_samples = raw_bytes
+            .iter()
+            .map(|x| Complex32::new((*x as i16) as f32, 0.0))
+            .collect();
+
+        return Some((doppler_tables, raw_samples));
+    }
+
+    // Checking elapsed time should use "cargo test --release" to get more realistic performance numbers
+    #[test]
+    fn test_acquisition_with_real_data() {
+        let (doppler_tables, raw_samples) = get_raw_samples().unwrap();
 
         let true_satellites = vec![1, 2, 3, 6, 9, 11, 14, 18, 19, 22, 28, 32];
         let mut test_prn = 1;
