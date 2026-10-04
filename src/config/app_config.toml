@@ -8,7 +8,7 @@ gain_db = 40.0
 
 [rf]
 output_sample_rate_hz = 2048000
-complex_signal = true
+real_signal = false
 enable_agc = true
 
 [pvt]

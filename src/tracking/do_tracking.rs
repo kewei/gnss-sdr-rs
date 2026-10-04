@@ -160,6 +160,7 @@ impl TrackingChannel {
         self.ca_code_ed_lt.push(GPS_CA_CODE_32_PRN[self.prn as usize - 1][0]);
         self.carrier_freq = result.carrier_freq;
         self.acq_carrier_freq = result.carrier_freq;
+        // self.fll_mode = result.fll_mode;  // Not implemented yet
         self.next_sample_index = result.sample_global_index;
         self.state = ChannelState::Tracking(result.prn);
     }
@@ -465,8 +466,8 @@ pub fn run(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::acquisition::do_acquisition::AcquisitionResult;
-    use crate::acquisition::{do_acquisition, doppler_shift};
+    use crate::acquisition::do_acquisition::{AcquisitionResult, LONG_SAMPLES_LENGTH};
+    use crate::acquisition::{do_acquisition, doppler_shift::DopplerShiftTable};
     use crate::constants::gps_property_constants;
     use crate::tracking::do_tracking::TrackingChannel;
     use crate::utilities::ca_code;
@@ -477,6 +478,11 @@ mod tests {
     use std::os::unix::fs::FileExt;
     use std::path::Path;
     use std::time::Instant;
+
+    const FS: f32 = 16_367_600.0;
+    const IF: f32 = 4_130_400.0;
+    const NUM_INTEGRATIONS: usize = LONG_SAMPLES_LENGTH;
+    const MS_SAMPLES: usize = NUM_INTEGRATIONS * 16368;
 
     /// Helper to generate 1ms of synthetic GPS L1 data
     fn generate_synthetic_signal(
@@ -533,7 +539,8 @@ mod tests {
             code_phase_chips: 0.0,
             fs: f_sampling,
             sample_global_index: 0,
-            fft_power: Vec::new()
+            fft_power: Vec::new(),
+            fll_mode: false,
         });
 
         let now = Instant::now();
@@ -640,6 +647,7 @@ mod tests {
             fs: f_sampling,
             sample_global_index: 0,
             fft_power: Vec::new(),
+            fll_mode: false,
         });
 
         let now = Instant::now();
@@ -702,19 +710,35 @@ mod tests {
         );
     }
 
+    fn get_doppler_table() -> Vec<DopplerShiftTable> {
+        let doppler_start = -7000.0;
+        let doppler_end = 7000.0;
+        let step = 500.0;
+
+        let mut doppler_tables = Vec::new();
+        let mut current_doppler = doppler_start;
+
+        while current_doppler <= doppler_end {
+            doppler_tables.push(DopplerShiftTable::new(
+                IF,
+                current_doppler,
+                FS,
+                MS_SAMPLES / NUM_INTEGRATIONS,
+            ));
+            current_doppler += step;
+        }
+        doppler_tables
+    }
+
     #[test]
     fn test_tracking_with_real_data() {
-        const FS: f32 = 16_367_600.0;
-        const IF: f32 = 4_130_400.0;
-        const NUM_INTEGRATIONS: usize = 11;
-        const MS_SAMPLES: usize = NUM_INTEGRATIONS * 16368;
-
         let root = env!("CARGO_MANIFEST_DIR");
         let file_path = Path::new(root)
             .join("src")
             .join("test_data")
             .join("GPS_recordings")
             .join("gioveAandB_short.bin");
+        let real_signal = true;
 
         let mut file = match File::open(file_path.clone()) {
             Ok(f) => f,
@@ -733,25 +757,10 @@ mod tests {
             .map(|b| Complex32::new((*b as i8) as f32, 0.0))
             .collect::<Vec<Complex32>>();
 
-        let doppler_start = -7000.0;
-        let doppler_end = 7000.0;
-        let step = 500.0;
-        let mut doppler_tables = Vec::new();
-        let mut current_doppler = doppler_start;
-
-        while current_doppler <= doppler_end {
-            doppler_tables.push(doppler_shift::DopplerShiftTable::new(
-                IF,
-                current_doppler,
-                FS,
-                MS_SAMPLES / NUM_INTEGRATIONS,
-            ));
-            current_doppler += step;
-        }
-
+        let doppler_tables = get_doppler_table();
         let prn = 3;
         let mut acq_worker =
-            do_acquisition::AcquisitionWorker::new(prn, MS_SAMPLES / NUM_INTEGRATIONS, FS);
+            do_acquisition::AcquisitionWorker::new(prn, MS_SAMPLES / NUM_INTEGRATIONS, FS, real_signal);
         let aqc_result = acq_worker
             .search_satellite(&buffer, &doppler_tables, 0, NUM_INTEGRATIONS)
             .expect("Failed to acquire satellite");
@@ -808,7 +817,7 @@ mod tests {
                 trk_channel.i_prompt.powi(2) + trk_channel.q_prompt.powi(2) > LOCK_THRESHOLD,
                 "Tracking lost: Prompt power below threshold"
             );
-            if i >= 0 && i < 20{
+            if i >= 80 && i < 100{
                 prompt_i.push(trk_channel.i_prompt);
                 prompt_q.push(trk_channel.q_prompt);
                 // doppler_history.push(trk_channel.carrier_freq);

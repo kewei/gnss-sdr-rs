@@ -1,7 +1,7 @@
 use eframe::egui;
-use crate::visualization::navigation_gui::NavigationGui;
+// use crate::visualization::navigation_gui::NavigationGui;
 use crate::visualization::acquisition_gui::AcquisitionGui;
-use crate::visualization::tracking_gui::TrackingGui;
+// use crate::visualization::tracking_gui::TrackingGui;
 
 pub struct GnssSdrRsGui {
     pub acquisition_gui: AcquisitionGui,

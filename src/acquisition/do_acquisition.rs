@@ -7,7 +7,7 @@ use crate::tracking::do_tracking::TrackingMessage;
 use crate::utilities::ca_code::generate_ca_code_samples_blocks;
 use crate::utilities::multicast_ring_buffer::MulticastRingBuffer;
 use crossbeam_channel::{Receiver, Sender};
-use num_complex::{Complex32, ComplexFloat};
+use num_complex::Complex32;
 use rayon::prelude::*;
 use rustfft::{Fft, FftDirection, FftPlanner, algorithm::Radix4};
 use std::collections::HashSet;
@@ -16,13 +16,13 @@ use std::f32::consts::PI;
 use std::simd::f32x8;
 use std::simd::num::SimdFloat;
 use std::sync::{Arc, PoisonError};
-use std::{default, fmt};
+use std::fmt;
 
 // const FFT_LENGTH_MS: u8 = 1;
 const FREQ_SEARCH_ACQUISITION_HZ: f32 = 14e3; // Hz
 const FREQ_SEARCH_STEP_HZ: u16 = 500; // Hz
 pub const PRN_SEARCH_ACQUISITION_TOTAL: u8 = 32; // 32 PRN codes to search
-const LONG_SAMPLES_LENGTH: usize = 11; // ms
+pub const LONG_SAMPLES_LENGTH: usize = 11; // ms
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum ChannelState {
@@ -102,6 +102,7 @@ pub struct AcquisitionResult {
     // pub mag_relative: f32,
     pub sample_global_index: usize,
     pub fft_power: Vec<f32>,
+    pub fll_mode: bool,
 }
 
 impl AcquisitionResult {
@@ -115,6 +116,7 @@ impl AcquisitionResult {
             // mag_relative: 0.0,
             sample_global_index: 0,
             fft_power: Vec::new(),
+            fll_mode: false,
         }
     }
 }
@@ -124,6 +126,7 @@ pub struct AcquisitionWorker {
     fft: Arc<dyn Fft<f32>>,
     ifft: Arc<dyn Fft<f32>>,
     fft_size: usize,
+    real_signal: bool,
     scratch_buf: Vec<Complex32>,
     freq_sampling_hz: f32,
     // doppler_table: &DopplerShiftTable,
@@ -133,7 +136,7 @@ pub struct AcquisitionWorker {
 }
 
 impl AcquisitionWorker {
-    pub fn new(prn: u8, fft_size: usize, freq_sampling_hz: f32) -> Self {
+    pub fn new(prn: u8, fft_size: usize, freq_sampling_hz: f32, real_signal: bool) -> Self {
         let mut planner = FftPlanner::new();
         let fft = planner.plan_fft_forward(fft_size);
         let ifft = planner.plan_fft_inverse(fft_size);
@@ -163,6 +166,7 @@ impl AcquisitionWorker {
             fft_size: fft_size,
             scratch_buf: vec![Complex32::new(0.0, 0.0); scratch_len],
             freq_sampling_hz: freq_sampling_hz,
+            real_signal: real_signal,
             // doppler_table: doppler_table.as_slice(),
             ca_code_samples: ca_code_samples,
             ca_code_samples_fft: ca_code_samples_fft,
@@ -179,6 +183,7 @@ impl AcquisitionWorker {
     ) -> Option<AcquisitionResult> {
         let mut global_max_val: f32 = 0.0;
         let mut best_code_phase: usize = 0;
+        let mut best_coarse_doppler: f32 = 0.0;
         let mut accumulated_power = vec![0.0; self.fft_size];
         let mut best_power_results = vec![0.0; self.fft_size];
 
@@ -216,6 +221,7 @@ impl AcquisitionWorker {
             if *local_max > global_max_val {
                 global_max_val = *local_max;
                 best_code_phase = local_best_phase;
+                best_coarse_doppler = doppler.carr_freq_hz;
                 best_power_results.copy_from_slice(&accumulated_power);
             }
         }
@@ -226,19 +232,25 @@ impl AcquisitionWorker {
                 code_phase_samples: best_code_phase,
                 code_phase_chips: best_code_phase as f32 * GPS_L1_CA_CODE_RATE_CHIPS_PER_S
                     / self.freq_sampling_hz,
-                carrier_freq: 0.0,
+                carrier_freq: best_coarse_doppler,
                 fs: self.freq_sampling_hz,
                 // mag_relative: global_max_val,
                 sample_global_index: local_tail + best_code_phase,
                 fft_power: Vec::new(),
-            };
-            let carr_freq =
-                self.finer_doppler(samples_chunk, best_code_phase, &mut res.fft_power)?;
-            // let fine_doppler_freq = self.fine_doppler_search(
-            //     samples_chunk,
-            //     best_carr_freq,
-            //     best_code_phase);
-            res.carrier_freq = carr_freq;
+                fll_mode: false,
+            }; 
+
+            if let Some(carr_freq) = self.finer_doppler(
+                samples_chunk,
+                best_code_phase,
+                best_coarse_doppler,
+                &mut res.fft_power) 
+            {
+                res.carrier_freq = carr_freq;
+            } else {
+                res.fll_mode = true;
+            }
+
 
             return Some(res);
         }
@@ -262,6 +274,7 @@ impl AcquisitionWorker {
         &self,
         samples_iq: &[Complex32],
         code_phase: usize,
+        coarse_doppler: f32,
         fft_power: &mut Vec<f32>,
     ) -> Option<f32> {
         let mean = samples_iq.iter().sum::<Complex32>() / samples_iq.len() as f32;
@@ -289,21 +302,18 @@ impl AcquisitionWorker {
 
         let half_fft_size = (((fft_size + 1) as f32) / 2.0).ceil() as usize;
 
-        println!(
-            "--------- idx: {}, half_fft_size: {}, fft_size: {}",
-            idx, half_fft_size, fft_size
-        );
-        println!("{:?}", fft_input[idx-5..idx+5].iter().map(|x| x.abs()).collect::<Vec<f32>>());
-        println!("{:?}", fft_input[fft_size-idx-5..fft_size-idx+5].iter().map(|x| x.abs()).collect::<Vec<f32>>());
-
-        let frequency = if idx <= half_fft_size {
+        let mut frequency = if idx <= half_fft_size {
             idx as f32 * self.freq_sampling_hz / fft_size as f32
         } else {
             (idx as isize - fft_size as isize) as f32 * self.freq_sampling_hz / fft_size as f32
         };
         *fft_power = fft_input.iter().map(|x| x.norm_sqr()).collect();
 
-        return Some(-frequency);
+        if self.real_signal {
+            frequency = coarse_doppler.signum() * frequency.abs();
+        }
+
+        return Some(frequency);
     }
 
     #[allow(dead_code)]
@@ -380,6 +390,7 @@ pub fn run(
     multi_buffer: Arc<MulticastRingBuffer>,
     freq_sampling_hz: f32,
     f_if: f32,
+    real_signal: bool,
     to_tracking: Sender<AcquisitionResult>,
     from_tracking: Receiver<TrackingMessage>,
     to_gui: std::sync::mpsc::Sender<AcquisitionData>,
@@ -406,7 +417,14 @@ pub fn run(
 
     let mut workers = (1..=PRN_SEARCH_ACQUISITION_TOTAL)
         .into_par_iter()
-        .filter_map(|prn| Some(AcquisitionWorker::new(prn, fft_size, freq_sampling_hz)))
+        .filter_map(|prn| {
+            Some(AcquisitionWorker::new(
+                prn,
+                fft_size,
+                freq_sampling_hz,
+                real_signal,
+            ))
+        })
         .collect::<Vec<AcquisitionWorker>>();
 
     let samples_integration_size = fft_size * LONG_SAMPLES_LENGTH;
@@ -554,30 +572,15 @@ mod tests {
         assert_eq!(mask, 2040);
     }
 
-    fn get_raw_samples() -> Option<(Vec<DopplerShiftTable>, Vec<Complex32>)>{
-        let doppler_start = -7000.0;
-        let doppler_end = 7000.0;
-        let step = 500.0;
-
-        let mut doppler_tables = Vec::new();
-        let mut current_doppler = doppler_start;
-
-        while current_doppler <= doppler_end {
-            doppler_tables.push(DopplerShiftTable::new(
-                IF,
-                current_doppler,
-                FS,
-                MS_SAMPLES / NUM_INTEGRATIONS,
-            ));
-            current_doppler += step;
-        }
-
+    fn get_raw_samples() -> Option<(Vec<Complex32>, bool)> {
         let root = env!("CARGO_MANIFEST_DIR");
         let file_path = Path::new(root)
             .join("src")
             .join("test_data")
             .join("GPS_recordings")
             .join("gioveAandB_short.bin");
+
+        let real_signal = true;
 
         let mut file = match File::open(file_path) {
             Ok(f) => f,
@@ -596,18 +599,39 @@ mod tests {
             .map(|x| Complex32::new((*x as i16) as f32, 0.0))
             .collect();
 
-        return Some((doppler_tables, raw_samples));
+        return Some((raw_samples, real_signal));
+    }
+
+    fn get_doppler_table() -> Vec<DopplerShiftTable> {
+        let doppler_start = -7000.0;
+        let doppler_end = 7000.0;
+        let step = 500.0;
+
+        let mut doppler_tables = Vec::new();
+        let mut current_doppler = doppler_start;
+
+        while current_doppler <= doppler_end {
+            doppler_tables.push(DopplerShiftTable::new(
+                IF,
+                current_doppler,
+                FS,
+                MS_SAMPLES / NUM_INTEGRATIONS,
+            ));
+            current_doppler += step;
+        }
+        doppler_tables
     }
 
     // Checking elapsed time should use "cargo test --release" to get more realistic performance numbers
     #[test]
     fn test_acquisition_with_real_data() {
-        let (doppler_tables, raw_samples) = get_raw_samples().unwrap();
+        let (raw_samples, real_signal) = get_raw_samples().unwrap();
+        let doppler_tables = get_doppler_table();
 
         let true_satellites = vec![1, 2, 3, 6, 9, 11, 14, 18, 19, 22, 28, 32];
         let mut test_prn = 1;
         while test_prn < 33 {
-            let mut worker = AcquisitionWorker::new(test_prn, MS_SAMPLES / NUM_INTEGRATIONS, FS);
+            let mut worker = AcquisitionWorker::new(test_prn, MS_SAMPLES / NUM_INTEGRATIONS, FS, real_signal);
 
             let now = Instant::now();
             let result =
@@ -643,11 +667,6 @@ mod tests {
 
     #[test]
     fn test_correlation_peak() {
-        const FS: f32 = 16_367_600.0;
-        const IF: f32 = 4_130_400.0;
-        const NUM_INTEGRATIONS: usize = LONG_SAMPLES_LENGTH;
-        const MS_SAMPLES: usize = NUM_INTEGRATIONS * 16368;
-
         let root = env!("CARGO_MANIFEST_DIR");
         let file_path = Path::new(root)
             .join("src")
@@ -662,23 +681,9 @@ mod tests {
                 return;
             }
         };
+        let real_signal = true;
 
-        let doppler_start = -7000.0;
-        let doppler_end = 7000.0;
-        let step = 500.0;
-
-        let mut doppler_tables = Vec::new();
-        let mut current_doppler = doppler_start;
-
-        while current_doppler <= doppler_end {
-            doppler_tables.push(DopplerShiftTable::new(
-                IF,
-                current_doppler,
-                FS,
-                MS_SAMPLES / NUM_INTEGRATIONS,
-            ));
-            current_doppler += step;
-        }
+        let doppler_tables = get_doppler_table();
 
         let test_prn = 3;
         let mut offset = 0;
@@ -693,7 +698,7 @@ mod tests {
                 .collect();
             offset += MS_SAMPLES;
 
-            let mut worker = AcquisitionWorker::new(test_prn, MS_SAMPLES / NUM_INTEGRATIONS, FS);
+            let mut worker = AcquisitionWorker::new(test_prn, MS_SAMPLES / NUM_INTEGRATIONS, FS, real_signal);
 
             let result =
                 worker.search_satellite(&raw_samples, &doppler_tables, 0, NUM_INTEGRATIONS);

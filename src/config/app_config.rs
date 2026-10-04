@@ -20,6 +20,7 @@ pub struct RfConfig {
     pub freq_if_hz: Option<f32>,
     pub output_sample_rate_hz: f32,
     pub enable_agc: bool,
+    pub real_signal: bool,
 }
 
 #[derive(Deserialize, Debug)]

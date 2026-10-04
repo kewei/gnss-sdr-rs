@@ -29,9 +29,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let mut raw_ring_buffer = create_samples_ring_buffer::<SampleComplex>(BUFFER_SIZE);
 
-    // We use a large buffer to store the samples from RF thread, and then the acquisition and tracking threads
-    // can read from it. Here only the RF thread will write to the buffer, and the acquisition and tracking threads
-    // will read from it, so we don't need to worry about concurrent write and read.
+    // We use a large buffer to store the samples. RF thread wrties to it, and the acquisition and tracking threads
+    // read from it.
     let multicast_buffer: Arc<MulticastRingBuffer> = Arc::new(MulticastRingBuffer::new(1 << 20)); // 1M Complex32 samples, 8MB
     let (tx_acq, rx_acq) = crossbeam_channel::unbounded::<AcquisitionResult>();
     let (tx_trk, rx_trk) = crossbeam_channel::unbounded::<TrackingMessage>();
@@ -61,6 +60,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             acquisition_multicast_buffer_clone,
             app_config.sdr.sample_rate_hz,
             app_config.rf.freq_if_hz.unwrap_or(0.0),
+            app_config.rf.real_signal,
             tx_acq,
             rx_trk,
             tx_acq_gui,

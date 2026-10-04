@@ -6,6 +6,8 @@ use ringbuf::HeapProd;
 use ringbuf::traits::Producer;
 // use soapysdr::Direction::Rx;
 
+const DEV_TIMEOUT: i64 = 100000; // 100ms
+
 pub fn sdr_thread(
     dev: &mut impl SdrDeviceWrapper,
     prod: &mut HeapProd<SampleComplex>,
@@ -20,7 +22,7 @@ pub fn sdr_thread(
     // let num_channels = dev.num_channels(Rx)?;  // Not really matter for GNSS
     let mut buf = vec![Complex32::new(0.0, 0.0); mtu];
     loop {
-        let n_samples = dev.read_samples(&mut [&mut buf[..]], 100000)?;
+        let n_samples = dev.read_samples(&mut [&mut buf[..]], DEV_TIMEOUT)?;
         if n_samples > 0 {
             let mut started = 0;
             while started < n_samples {
