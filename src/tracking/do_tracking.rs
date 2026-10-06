@@ -169,6 +169,11 @@ impl TrackingChannel {
         self.state == ChannelState::Tracking(self.prn)
     }
 
+    // This update takes the buffer data per channel and tracks the processed sample index.
+    // What about another design?: TrackingManager takes the buffer data for all channels, and 
+    // tracks the buffer head index. Each new ms data most likely does not align with any CA code,
+    // then each channel needs to store the leftover sampels from the previous ms data, and combine
+    // with the new ms data to form a complete CA code for correlation.
     pub fn update(&mut self, buff: Arc<MulticastRingBuffer>) -> Option<TrackingMessage> {
         if self.state != ChannelState::Tracking(self.prn) {
             return None;
@@ -420,6 +425,7 @@ impl TrackingManager {
             });
     }
 
+    // As long as the buffer data is avaliable for one channel (the earilest channel), it will be processed.
     fn next_tracking_index(&self) -> usize {
         self.channels
             .iter()
