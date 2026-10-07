@@ -36,50 +36,53 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let (tx_trk, rx_trk) = crossbeam_channel::unbounded::<TrackingMessage>();
     let (tx_acq_gui, rx_acq_gui) = std::sync::mpsc::channel::<AcquisitionData>();
 
+    let sample_rate_hz = app_config.sdr.sample_rate_hz;
+    let rf_config = app_config.rf;
+    let freq_if_hz = rf_config.freq_if_hz.unwrap_or(0.0);
+    let real_signal = rf_config.real_signal;
+
     thread::spawn(move || {
-        let _ = sdr_thread(&mut sdr_dev, &mut raw_ring_buffer.producer);
-    })
-    .join()
-    .map_err(|e| format!("SDR thread failed: {:?}", e))?;
+        if let Err(error) = sdr_thread(&mut sdr_dev, &mut raw_ring_buffer.producer) {
+            eprintln!("SDR thread failed: {error}");
+        }
+    });
 
     let rf_multicast_buffer_clone = Arc::clone(&multicast_buffer);
     thread::spawn(move || {
         rf_thread(
-            &app_config.rf,
-            app_config.sdr.sample_rate_hz,
+            &rf_config,
+            sample_rate_hz,
             &mut raw_ring_buffer.consumer,
             rf_multicast_buffer_clone,
         );
-    })
-    .join()
-    .map_err(|e| format!("RF thread failed: {:?}", e))?;
+    });
 
     let acquisition_multicast_buffer_clone = Arc::clone(&multicast_buffer);
     thread::spawn(move || {
-        let _ = do_acquisition::run(
+        if let Err(error) = do_acquisition::run(
             acquisition_multicast_buffer_clone,
-            app_config.sdr.sample_rate_hz,
-            app_config.rf.freq_if_hz.unwrap_or(0.0),
-            app_config.rf.real_signal,
+            sample_rate_hz,
+            freq_if_hz,
+            real_signal,
             tx_acq,
             rx_trk,
             tx_acq_gui,
-        );
-    })
-    .join()
-    .map_err(|e| format!("Acquisition thread failed: {:?}", e))?;
+        ) {
+            eprintln!("Acquisition thread failed: {error}");
+        }
+    });
 
     let trk_multicast_buffer_clone = Arc::clone(&multicast_buffer);
     thread::spawn(move || {
-        let _ = do_tracking::run(
+        if let Err(error) = do_tracking::run(
             trk_multicast_buffer_clone,
             rx_acq,
             tx_trk,
-            app_config.sdr.sample_rate_hz,
-        );
-    })
-    .join()
-    .map_err(|e| format!("Tracking thread failed: {:?}", e))?;
+            sample_rate_hz,
+        ) {
+            eprintln!("Tracking thread failed: {error}");
+        }
+    });
 
     let acq_gui = AcquisitionGui::new(rx_acq_gui);
     let app = GnssSdrRsGui::new(acq_gui);
