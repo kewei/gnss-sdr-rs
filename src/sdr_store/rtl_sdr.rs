@@ -29,7 +29,11 @@ impl SdrDeviceWrapper for RtlSdr<Device> {
     }
 
     fn config(&mut self, config: Value) -> Result<(), SdrError> {
-        if let Some(c_freq) = config.get("center_frequency").and_then(Value::as_f64) {
+        if let Some(c_freq) = config
+            .get("center_frequency_hz")
+            .or_else(|| config.get("center_frequency"))
+            .and_then(Value::as_f64)
+        {
             self.device()?
                 .set_frequency(Direction::Rx, 0, c_freq, Args::from(""))
                 .map_err(|e| {
@@ -39,7 +43,11 @@ impl SdrDeviceWrapper for RtlSdr<Device> {
             thread::sleep(time::Duration::from_millis(100));
         }
 
-        if let Some(s_rate) = config.get("sample_rate").and_then(Value::as_f64) {
+        if let Some(s_rate) = config
+            .get("sample_rate_hz")
+            .or_else(|| config.get("sample_rate"))
+            .and_then(Value::as_f64)
+        {
             self.device()?
                 .set_sample_rate(Direction::Rx, 0, s_rate)
                 .map_err(|e| SdrError::OtherError(format!("Failed to set sample rate: {}", e)))?;
@@ -47,7 +55,11 @@ impl SdrDeviceWrapper for RtlSdr<Device> {
             thread::sleep(time::Duration::from_millis(100));
         }
 
-        if let Some(gain) = config.get("gain").and_then(Value::as_f64) {
+        if let Some(gain) = config
+            .get("gain_db")
+            .or_else(|| config.get("gain"))
+            .and_then(Value::as_f64)
+        {
             self.device()?
                 .set_gain(Direction::Rx, 0, gain)
                 .map_err(|e| SdrError::OtherError(format!("Failed to set gain: {}", e)))?;
@@ -71,7 +83,11 @@ impl SdrDeviceWrapper for RtlSdr<Device> {
         //     thread::sleep(time::Duration::from_millis(100));
         // }
 
-        if let Some(bandwidth) = config.get("bandwidth").and_then(Value::as_f64) {
+        if let Some(bandwidth) = config
+            .get("bandwidth_hz")
+            .or_else(|| config.get("bandwidth"))
+            .and_then(Value::as_f64)
+        {
             self.device()?
                 .set_bandwidth(Direction::Rx, 0, bandwidth)
                 .map_err(|e| SdrError::OtherError(format!("Failed to set bandwidth: {}", e)))?;
@@ -121,6 +137,10 @@ impl SdrDeviceWrapper for RtlSdr<Device> {
 
     fn get_rx_stream_mute(&mut self) -> Option<&mut RxStream<Complex32>> {
         self.rx_stream.as_mut()
+    }
+
+    fn start_rx_stream(&mut self, time_ns: Option<i64>) -> Result<(), SdrError> {
+        self.start_sdr(&[0], time_ns)
     }
 
     fn read_samples(
@@ -180,7 +200,7 @@ impl RtlSdr<Device> {
             .rx_stream::<Complex32>(chnls)
             .map_err(|e| SdrError::StreamError(e.to_string()))?;
         rx_stream
-            .activate(None)
+            .activate(time_ns)
             .map_err(|e| SdrError::StreamError(e.to_string()))?;
         self.rx_stream = Some(rx_stream);
         Ok(())

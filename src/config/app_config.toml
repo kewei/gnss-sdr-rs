@@ -1,14 +1,22 @@
-device = "rtlsdr" # Options: "rtlsdr", "hackrf", "limesdr", "plutosdr", "airspy"
+device = "rtlsdr" # Options: "file", "rtlsdr", "hackrf", "limesdr", "plutosdr", "airspy"
+
+# For local capture playback, set device = "file" and configure:
+# [file_input]
+# path = "capture.bin"
+# data_format = "i8" # i8, u8, i16, u16, i32, u32, i64, u64, f32, or f64
+# data_layout = "complex" # "complex" or "real"
+# endianness = "little" # "little" or "big"; ignored for 8-bit components
 
 [sdr]
-center_freq_hz = 1575420000
+center_frequency_hz = 1575420000
 sample_rate_hz = 2048000
 bandwidth_hz = 2048000
 gain_db = 40.0
+channel_count = 1
 
 [rf]
 output_sample_rate_hz = 2048000
-real_signal = false
+complex_signal = true
 enable_agc = true
 
 [pvt]

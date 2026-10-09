@@ -16,6 +16,7 @@ use std::f32::consts::PI;
 use std::simd::f32x8;
 use std::simd::num::SimdFloat;
 use std::sync::{Arc, PoisonError};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::fmt;
 
 // const FFT_LENGTH_MS: u8 = 1;
@@ -126,7 +127,7 @@ pub struct AcquisitionWorker {
     fft: Arc<dyn Fft<f32>>,
     ifft: Arc<dyn Fft<f32>>,
     fft_size: usize,
-    real_signal: bool,
+    complex_signal: bool,
     scratch_buf: Vec<Complex32>,
     freq_sampling_hz: f32,
     // doppler_table: &DopplerShiftTable,
@@ -136,7 +137,7 @@ pub struct AcquisitionWorker {
 }
 
 impl AcquisitionWorker {
-    pub fn new(prn: u8, fft_size: usize, freq_sampling_hz: f32, real_signal: bool) -> Self {
+    pub fn new(prn: u8, fft_size: usize, freq_sampling_hz: f32, complex_signal: bool) -> Self {
         let mut planner = FftPlanner::new();
         let fft = planner.plan_fft_forward(fft_size);
         let ifft = planner.plan_fft_inverse(fft_size);
@@ -166,7 +167,7 @@ impl AcquisitionWorker {
             fft_size: fft_size,
             scratch_buf: vec![Complex32::new(0.0, 0.0); scratch_len],
             freq_sampling_hz: freq_sampling_hz,
-            real_signal: real_signal,
+            complex_signal: complex_signal,
             // doppler_table: doppler_table.as_slice(),
             ca_code_samples: ca_code_samples,
             ca_code_samples_fft: ca_code_samples_fft,
@@ -309,7 +310,7 @@ impl AcquisitionWorker {
         };
         *fft_power = fft_input.iter().map(|x| x.norm_sqr()).collect();
 
-        if self.real_signal {
+        if !self.complex_signal {
             frequency = coarse_doppler.signum() * frequency.abs();
         }
 
@@ -394,6 +395,7 @@ pub fn run(
     to_tracking: Sender<AcquisitionResult>,
     from_tracking: Receiver<TrackingMessage>,
     to_gui: std::sync::mpsc::Sender<AcquisitionData>,
+    pipeline_finished: Arc<AtomicBool>,
 ) -> Result<(), AcqError> {
     let capacity = (FREQ_SEARCH_ACQUISITION_HZ as u16 / FREQ_SEARCH_STEP_HZ) as usize + 1;
     let fft_size = (freq_sampling_hz
@@ -432,6 +434,8 @@ pub fn run(
     let mut last_run = std::time::Instant::now();
 
     loop {
+        let input_finished = pipeline_finished.load(Ordering::Acquire);
+
         while let Ok(msg) = from_tracking.try_recv() {
             match msg {
                 TrackingMessage::SatelliteLost(prn) => {
@@ -446,7 +450,7 @@ pub fn run(
         acq_manager.update_mode(active_prns.len());
         let (interval_ms, mask) = acq_manager.get_pacing_and_list(&active_prns);
 
-        if last_run.elapsed().as_millis() < interval_ms as u128 {
+        if !input_finished && last_run.elapsed().as_millis() < interval_ms as u128 {
             std::thread::sleep(std::time::Duration::from_millis(50));
             continue;
         }
@@ -492,7 +496,13 @@ pub fn run(
             }
 
             last_run = std::time::Instant::now();
+            if input_finished {
+                break Ok(());
+            }
         } else {
+            if input_finished {
+                break Ok(());
+            }
             std::thread::sleep(std::time::Duration::from_millis(1));
         }
     }

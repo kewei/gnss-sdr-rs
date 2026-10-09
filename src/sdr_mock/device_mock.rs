@@ -41,6 +41,9 @@ impl SdrDeviceWrapper for MockDevice {
     fn get_rx_stream_mute(&mut self) -> Option<&mut soapysdr::RxStream<Complex32>> {
         None
     }
+    fn start_rx_stream(&mut self, time_ns: Option<i64>) -> Result<(), SdrError> {
+        Ok(())
+    }
 }
 
 impl MockDevice {

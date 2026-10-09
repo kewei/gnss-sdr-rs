@@ -2,12 +2,15 @@ use std::fmt::{Display, Formatter};
 use serde::Deserialize;
 use crate::sdr_store::sdr_wrapper::SdrConfig;
 use crate::constants::gps_property_constants::GPS_L1_FREQ_HZ;
+use crate::input::file_input::FileInputConfig;
 
-pub static APP_CONFIG_FILE: &str = "config/app_config.toml";
+pub static APP_CONFIG_FILE: &str = "src/config/app_config.toml";
 
 #[derive(Deserialize, Debug)]
 pub struct AppConfig {
     pub device: String,
+    #[serde(default)]
+    pub file_input: Option<FileInputConfig>,
     pub sdr: SdrConfig,
     pub rf: RfConfig,
     pub pvt: PvtConfig,
@@ -20,7 +23,7 @@ pub struct RfConfig {
     pub freq_if_hz: Option<f32>,
     pub output_sample_rate_hz: f32,
     pub enable_agc: bool,
-    pub real_signal: bool,
+    pub complex_signal: bool,
 }
 
 #[derive(Deserialize, Debug)]
@@ -55,5 +58,17 @@ impl AppConfig {
         let f_if: f32 = config.sdr.center_frequency_hz - GPS_L1_FREQ_HZ;
         config.rf.freq_if_hz = Some(f_if);
         Ok(config)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn current_config_still_loads_without_file_input() {
+        let config = AppConfig::from_toml_file(APP_CONFIG_FILE).unwrap();
+        assert!(config.file_input.is_none());
+        assert_eq!(config.sdr.center_frequency_hz, 1_575_420_000.0);
     }
 }

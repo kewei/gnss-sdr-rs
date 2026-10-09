@@ -104,6 +104,13 @@ impl MulticastRingBuffer {
         self.head.load(Ordering::Acquire)
     }
 
+    pub fn notify_waiters(&self) -> Result<(), MulticastRingBuffError> {
+        let mut guard = self.notifier.lock()?;
+        *guard = true;
+        self.condvar.notify_all();
+        Ok(())
+    }
+
     pub fn copy_to_slice(&self, start: usize, dest: &mut [Complex32]) {
         let n = dest.len();
         let physical_start = start & self.mask;

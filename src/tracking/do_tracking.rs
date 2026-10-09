@@ -11,6 +11,7 @@ use std::error::Error;
 use std::f32::consts::PI;
 use std::sync::Arc;
 use std::sync::PoisonError;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 const LOCK_THRESHOLD: f32 = 15.0;
 const MAX_LOST_EPOCHS: u32 = 20; // ms
@@ -402,6 +403,19 @@ impl TrackingManager {
     }
 
     pub fn process_channels(&mut self, multi_ring_buf: Arc<MulticastRingBuffer>) {
+        self.receive_acquisition_results();
+
+        self.channels
+            .par_iter_mut()
+            .filter(|c| c.is_active())
+            .for_each(|chnl| {
+                if let Some(msg) = chnl.update(multi_ring_buf.clone()) {
+                    let _ = self.trk_to_acq.send(msg);
+                }
+            });
+    }
+
+    fn receive_acquisition_results(&mut self) {
         while let Ok(msg) = self.acq_to_trk.try_recv() {
             if let Some(channel) = self
                 .channels
@@ -414,15 +428,6 @@ impl TrackingManager {
                 channel.start(msg);
             }
         }
-
-        self.channels
-            .par_iter_mut()
-            .filter(|c| c.is_active())
-            .for_each(|chnl| {
-                if let Some(msg) = chnl.update(multi_ring_buf.clone()) {
-                    let _ = self.trk_to_acq.send(msg);
-                }
-            });
     }
 
     // As long as the buffer data is avaliable for one channel (the earilest channel), it will be processed.
@@ -441,23 +446,61 @@ pub fn run(
     acq_to_trk: Receiver<AcquisitionResult>,
     trk_to_acq: Sender<TrackingMessage>,
     fs: f32,
+    pipeline_finished: Arc<AtomicBool>,
+    acquisition_finished: Arc<AtomicBool>,
 ) -> Result<(), TrackingError> {
     let mut manager = TrackingManager::new(acq_to_trk, trk_to_acq, fs);
     loop {
         let mut curr_head = multi_ring_buf.get_head();
         let mut required_idx = manager.next_tracking_index();
+        if pipeline_finished.load(Ordering::Acquire) && required_idx == 0 {
+            manager.receive_acquisition_results();
+            required_idx = manager.next_tracking_index();
+            if required_idx == 0 {
+                if acquisition_finished.load(Ordering::Acquire) {
+                    break Ok(());
+                }
+                std::thread::sleep(std::time::Duration::from_millis(5));
+                continue;
+            }
+        }
+
+        if pipeline_finished.load(Ordering::Acquire)
+            && (curr_head.wrapping_sub(required_idx) as isize) < 0
+        {
+            manager.receive_acquisition_results();
+            required_idx = manager.next_tracking_index();
+            curr_head = multi_ring_buf.get_head();
+            if (curr_head.wrapping_sub(required_idx) as isize) < 0 {
+                if acquisition_finished.load(Ordering::Acquire) {
+                    break Ok(());
+                }
+                std::thread::sleep(std::time::Duration::from_millis(5));
+                continue;
+            }
+        }
+
         if (curr_head.wrapping_sub(required_idx) as isize) < 0 {
             let mut head_guard = multi_ring_buf.notifier.lock()?;
             while (multi_ring_buf
                 .get_head()
                 .wrapping_sub(manager.next_tracking_index()) as isize)
                 < 0
+                && !pipeline_finished.load(Ordering::Acquire)
             {
                 head_guard = multi_ring_buf.condvar.wait(head_guard)?;
             }
 
             curr_head = multi_ring_buf.get_head();
             drop(head_guard);
+            if (curr_head.wrapping_sub(required_idx) as isize) < 0
+                && pipeline_finished.load(Ordering::Acquire)
+            {
+                if acquisition_finished.load(Ordering::Acquire) {
+                    break Ok(());
+                }
+                continue;
+            }
         }
 
         while (curr_head.wrapping_sub(required_idx) as isize) >= 0 {

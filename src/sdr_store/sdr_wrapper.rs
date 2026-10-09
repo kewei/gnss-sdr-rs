@@ -197,6 +197,9 @@ pub trait SdrDeviceWrapper {
     /// Reading samples into the buffer
     fn read_samples(&mut self, buf: &mut [&mut [Complex32]], timeout_us: i64) -> Result<usize, SdrError>;
 
+    /// Start the receive stream after applying device configuration.
+    fn start_rx_stream(&mut self, time_ns: Option<i64>) -> Result<(), SdrError>;
+
     /// Transmitting samples from the buffer
     fn transmit_samples(&self, buf: &mut [&mut [Complex32]]) -> Result<(), SdrError>;
 }
@@ -231,6 +234,10 @@ impl SdrDeviceWrapper for Device {
 
     fn get_rx_stream_mute(&mut self) -> Option<&mut RxStream<Complex32>> {
         None
+    }
+
+    fn start_rx_stream(&mut self, time_ns: Option<i64>) -> Result<(), SdrError> {
+        Ok(())
     }
 
 }

@@ -1,18 +1,27 @@
 use crate::rf::samples_buffer::SampleComplex;
+use crate::sdr_store::sdr_wrapper::SdrConfig;
 use crate::sdr_store::sdr_wrapper::SdrDeviceWrapper;
 use crate::sdr_store::sdr_wrapper::SdrError;
+use crate::sdr_store::sdr_wrapper::start_device_with_name;
 use num_complex::Complex32;
 use ringbuf::HeapProd;
 use ringbuf::traits::Producer;
+use serde_json::json;
 // use soapysdr::Direction::Rx;
 
+const ACTIVATION_TIME: i64 = 10000000; // 10ms
 const DEV_TIMEOUT: i64 = 100000; // 100ms
 
+// Start RX stream with channel 0
 pub fn sdr_thread(
-    dev: &mut impl SdrDeviceWrapper,
+    device: String,
+    sdr: SdrConfig,
     prod: &mut HeapProd<SampleComplex>,
 ) -> Result<(), SdrError> {
-    let mtu: usize = dev
+    let mut sdr_dev = start_device_with_name(device)?;
+    sdr_dev.config(json!(&sdr))?;
+    sdr_dev.start_rx_stream(Some(ACTIVATION_TIME))?;
+    let mtu: usize = sdr_dev
         .get_rx_stream_mute()
         .ok_or(SdrError::StreamError(
             "Rx stream not initialized".to_string(),
@@ -22,7 +31,7 @@ pub fn sdr_thread(
     // let num_channels = dev.num_channels(Rx)?;  // Not really matter for GNSS
     let mut buf = vec![Complex32::new(0.0, 0.0); mtu];
     loop {
-        let n_samples = dev.read_samples(&mut [&mut buf[..]], DEV_TIMEOUT)?;
+        let n_samples = sdr_dev.read_samples(&mut [&mut buf[..]], DEV_TIMEOUT)?;
         if n_samples > 0 {
             let mut started = 0;
             while started < n_samples {
